@@ -684,9 +684,18 @@ impl SvgRenderer {
             }
             RenderNodeType::TextBox => {
                 let clip_id = format!("textbox-clip-{}", node.id);
+                // 한글은 글상자 하단을 넘는 자식 개체(하단 장식 등)를 잘라내지
+                // 않는다 — 클립 높이만 자식 콘텐츠 최하단까지 확장한다.
+                fn subtree_max_bottom(n: &RenderNode) -> f64 {
+                    n.children
+                        .iter()
+                        .map(subtree_max_bottom)
+                        .fold(n.bbox.y + n.bbox.height, f64::max)
+                }
+                let clip_h = (subtree_max_bottom(node) - node.bbox.y).max(node.bbox.height);
                 self.defs.push(format!(
                     "<clipPath id=\"{}\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/></clipPath>\n",
-                    clip_id, node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
+                    clip_id, node.bbox.x, node.bbox.y, node.bbox.width, clip_h,
                 ));
                 self.output
                     .push_str(&format!("<g clip-path=\"url(#{})\">", clip_id));

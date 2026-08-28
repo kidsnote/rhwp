@@ -522,17 +522,35 @@ fn paragraph_active_text_style(
 /// `compose_paragraph()` 는 렌더러 내부 안내용 400HU 줄을 남기지만, HWP5 원본의
 /// 빈 문단 높이는 그 값이 아니라 글자 모양과 ParaShape 줄간격에서 결정된다.
 /// HWP3 변환본만 기존 page-count 계약을 위해 작은 글꼴 cap을 유지한다.
-fn empty_no_lineseg_paragraph_metrics(
+pub(crate) fn empty_no_lineseg_paragraph_metrics(
     para: &Paragraph,
     styles: &ResolvedStyleSet,
     para_style: Option<&crate::renderer::style_resolver::ResolvedParaStyle>,
     hwp3_legacy_caps: bool,
     dpi: f64,
 ) -> Option<(f64, f64, f64)> {
+    // typeset 쪽 empty_paragraph_fallback_line_metrics 와
+    // 동일 완화 — 비자리차지(글앞/글뒤/어울림) 앵커 도형·그림만 가진 빈 문단도 한글은
+    // 완전한 em 줄박스를 부여한다. 두 장부(판정·그리기)가 같은 규칙을 가져야 렌더 y 와
+    // 단 경계가 일치한다.
+    let controls_flow_neutral = para.controls.iter().all(|c| {
+        let common = match c {
+            crate::model::control::Control::Picture(p) => &p.common,
+            crate::model::control::Control::Shape(s) => s.common(),
+            _ => return false,
+        };
+        !common.treat_as_char
+            && matches!(
+                common.text_wrap,
+                crate::model::shape::TextWrap::InFrontOfText
+                    | crate::model::shape::TextWrap::BehindText
+                    | crate::model::shape::TextWrap::Square
+            )
+    });
     if !para.text.trim().is_empty()
-        || !para.controls.is_empty()
+        || !(para.controls.is_empty() || controls_flow_neutral)
         || !para.line_segs.is_empty()
-        || para.char_count == 0
+        || (para.char_count == 0 && para.controls.is_empty())
     {
         return None;
     }
@@ -734,6 +752,42 @@ fn tac_owned_by_prior_empty_line(comp: &ComposedParagraph, line_idx: usize, pos:
     comp.lines
         .get(line_idx - 1)
         .is_some_and(|prev| prev.runs.is_empty() && prev.char_start == pos)
+}
+
+/// 합성 lineseg(저장 조판 없음) 문단에서 tac 그림/도형이 실린 줄의 최소 전진
+/// 높이(px). 한글은 글자처럼 개체가 줄 높이를 개체 높이만큼 키우는데, 저장
+/// lineseg 문단은 저장 lh 가 이를 이미 반영하므로 합성 문단만 대상이다.
+pub(crate) fn no_ls_tac_object_line_min_flow_px(
+    para: &crate::model::paragraph::Paragraph,
+    comp: &ComposedParagraph,
+    line_idx: usize,
+    dpi: f64,
+) -> Option<f64> {
+    if para.line_segs.iter().any(|ls| ls.tag & 0x80000000 == 0) {
+        return None; // 저장 lineseg 보유 — 저장 lh 신뢰
+    }
+    let line = comp.lines.get(line_idx)?;
+    // 첫 줄은 선행 컨트롤 문자 위치(char_start 앞)에 앵커된 tac 도 포함한다.
+    let start = if line_idx == 0 { 0 } else { line.char_start };
+    let end = comp
+        .lines
+        .get(line_idx + 1)
+        .map(|next| next.char_start)
+        .unwrap_or(usize::MAX);
+    let max_h_hu = comp
+        .tac_controls
+        .iter()
+        .filter(|(pos, _, _)| char_pos_in_line(*pos, start, end))
+        .filter_map(|(_, _, ctrl_idx)| match para.controls.get(*ctrl_idx)? {
+            Control::Picture(p) if p.common.treat_as_char => Some(p.common.height as i32),
+            Control::Shape(s) if s.common().treat_as_char => Some(s.common().height as i32),
+            _ => None,
+        })
+        .max()?;
+    if max_h_hu <= 0 {
+        return None;
+    }
+    Some(crate::renderer::hwpunit_to_px(max_h_hu, dpi))
 }
 
 fn line_has_tac_control(comp: &ComposedParagraph, line_idx: usize) -> bool {
@@ -3680,7 +3734,14 @@ impl LayoutEngine {
                 .and_then(|p| p.line_segs.first())
                 .map(|ls| hwpunit_to_px(ls.vertical_pos, self.dpi))
                 .unwrap_or(0.0);
-            if vpos0_px > 0.0 {
+            // [편집 세션] Enter로 자란 자리차지 표의 post-text가 typeset에서 다음
+            // 쪽으로 재배정된 경우, 저장 vpos는 앞 쪽 하단 좌표라 무효다 — 절대
+            // 가산하면 새 쪽에서도 쪽 하단에 그려져 문구·로고가 잘린다(재현 문서 A
+            // 셀 끝 Enter 3~4회). 단 절반을 넘는 과대 vpos만 차단해 상단 여백
+            // 재현(test-image.hwp 폴백 목적)은 유지한다.
+            let session_stale_vpos =
+                self.profile.get().session_edited() && vpos0_px > col_area.height * 0.5;
+            if vpos0_px > 0.0 && !session_stale_vpos {
                 y += vpos0_px;
             }
         }
@@ -3900,6 +3961,26 @@ impl LayoutEngine {
                         && range
                             .windows(2)
                             .all(|w| w[1].vertical_pos >= w[0].vertical_pos)
+                        // vpos 는 쪽(단) 상단 기준 쪽-상대 좌표다(아래 #3637 주석).
+                        // 단 높이를 유의미하게 넘는 vpos 는 앞 쪽 좌표계의 잔재다 —
+                        // 셀 편집으로 커진 자리차지 표가 분할 이월된 뒤의 host 후행
+                        // 줄(재현 문서 A: vpos 1181px > 단 1047px)을 절대 스냅하면
+                        // 다음 쪽 본문 밖에 그려져 하단 문구가 소실된다. 이때는
+                        // 흐름 y(분할 조각 하단)로 폴백한다.
+                        && range.iter().all(|seg| {
+                            hwpunit_to_px(seg.vertical_pos, self.dpi)
+                                <= col_area.height + 60.0
+                        })
+                        // [편집 세션] Enter로 자란 자리차지 표의 post-text가 다음 쪽으로
+                        // 재배정되면 저장 vpos(앞 쪽 하단 좌표)는 무효다 — 스냅하면 새
+                        // 쪽에서도 쪽 하단에 그려져 잘린다(재현 문서 A 셀 끝 Enter 3~4회).
+                        // 스냅 목적지가 흐름 커서보다 단 절반 이상 아래면 흐름 y 로
+                        // 폴백한다. 같은 쪽 배치(괴리 소폭)는 종전 스냅을 유지한다.
+                        && !(self.profile.get().session_edited()
+                            && range.first().is_some_and(|seg| {
+                                col_area.y + hwpunit_to_px(seg.vertical_pos, self.dpi)
+                                    > y + col_area.height * 0.5
+                            }))
                     {
                         // [#3637] 기준은 **단 상단**이다 (원점 0).
                         //
@@ -4578,8 +4659,26 @@ impl LayoutEngine {
             // indent가 image 쪽으로 한 번 더 돌출한다(HWP5 p127 그림 56 / p156 그림 64).
             let (line_cs_offset, line_avail_w_override) = if let Some(anchor) = wrap_anchor {
                 let seg = para.and_then(|p| p.line_segs.get(line_idx));
-                let cs = seg.map(|s| s.column_start as i32).unwrap_or(0);
-                let sw = seg.map(|s| s.segment_width as i32).unwrap_or(0);
+                // NO_LS 문단은 줄별 저장 cs/sw 가 없으므로
+                // 합성 anchor 의 존을 모든 줄에 적용한다.
+                let (cs, sw) = match seg {
+                    Some(s) => (s.column_start as i32, s.segment_width as i32),
+                    None => {
+                        // 줄 단위 배제 밴드: anchor 에 y 밴드가 실려 있으면 그
+                        // 밴드와 교차하는 줄에만 감폭을 적용한다(출석부 형상 —
+                        // 문단 첫 줄은 전폭, 개체 옆 줄만 회피).
+                        let in_band = anchor.band_y_range.is_none_or(|(band_top, band_bottom)| {
+                            // 눈금 오차(판정/렌더 장부 차)에 강하도록 줄 중심으로 판정.
+                            let line_center = text_y - y_start + line_height * 0.5;
+                            line_center > band_top - 2.0 && line_center < band_bottom + 2.0
+                        });
+                        if in_band {
+                            (anchor.anchor_cs, anchor.anchor_sw)
+                        } else {
+                            (0, 0)
+                        }
+                    }
+                };
                 let mr = anchor.anchor_image_margin_right;
                 let cs_px = crate::renderer::hwpunit_to_px(cs + mr, self.dpi);
                 let sw_px = if sw > 0 {
@@ -4712,8 +4811,16 @@ impl LayoutEngine {
                 .as_ref()
                 .map(|flow| flow.extra_rows)
                 .unwrap_or(0);
-            let line_flow_height =
+            let mut line_flow_height =
                 line_height + equation_tac_extra_rows as f64 * (line_height + line_spacing_px);
+            // 합성 lineseg 문단의 tac 그림/도형 줄: 개체 높이만큼 줄 전진을 확장
+            // (한글: 글자처럼 개체는 줄 높이를 키운다 — 다음 줄이 개체 위로
+            // 올라오지 않게).
+            if let Some(min_flow) = para
+                .and_then(|p| no_ls_tac_object_line_min_flow_px(p, composed, line_idx, self.dpi))
+            {
+                line_flow_height = line_flow_height.max(min_flow);
+            }
             let render_line_flow_height =
                 if cell_ctx.is_none() && para_index >= self.endnote_para_base.get() {
                     // 미주 lineSeg의 행 진행값이 실제 TextLine bbox보다 작으면 단일 줄 미주가
@@ -6635,13 +6742,23 @@ impl LayoutEngine {
                                         calc_sibling_topandbottom_reserved_hu(&p.controls),
                                         self.dpi,
                                     );
-                                    // 줄 y 가 이미 형제 자리차지 예약 아래(최종 좌표)면
-                                    // 이중 가산 금지 — host 문단의 꼬리 줄이 저장 vpos
-                                    // 스냅으로 표 아래(쪽 하단)에 이미 놓였는데 표 높이
-                                    // 를 또 더하면 tac 그림이 줄보다 예약 높이만큼 아래
-                                    // (쪽 밖, #6271 실측 y=2113px > 단 하단 1115px)에
-                                    // 그려져 소실된다.
-                                    if raw > 40.0 && y >= col_area.y + raw - 4.0 {
+                                    // 줄 y 가 이미 형제 자리차지
+                                    // 예약 아래(최종 좌표)면 이중 가산 금지 — 재현 문서 A
+                                    // 꼬리말 tac 이미지가 줄(1064)보다 +1049 아래(페이지
+                                    // 밖 2113)에 그려지던 잔존 결함. 가산 결과가 단
+                                    // 하단을 넘는 경우도 stale 예약(분할 이월 쪽의
+                                    // 통짜 가정)이므로 가산하지 않는다.
+                                    // [편집 세션] typeset 이 라인 흐름(표 아래·새 쪽
+                                    // 재배정)을 이미 끝낸 상태라 저장-형상 가정의 예약
+                                    // 가산이 이중이 된다 — 이월된 2쪽에서 로고가 쪽
+                                    // 하단(y+1049)에 그려지던 결함(재현 문서 A 셀 끝
+                                    // Enter 3~4회). 흐름 y 를 그대로 신뢰한다.
+                                    if self.profile.get().session_edited() {
+                                        0.0
+                                    } else if raw > 40.0
+                                        && (y >= col_area.y + raw - 4.0
+                                            || y + raw > col_area.y + col_area.height + 3.8)
+                                    {
                                         0.0
                                     } else {
                                         raw
@@ -7931,10 +8048,21 @@ impl LayoutEngine {
                             let sibling_reserved_px = if vars.has_topbottom_vpos_base {
                                 0.0
                             } else {
-                                hwpunit_to_px(
+                                let raw = hwpunit_to_px(
                                     calc_sibling_topandbottom_reserved_hu(&p.controls),
                                     self.dpi,
-                                )
+                                );
+                                // 위 텍스트 줄 경로와 동일한 가드 — 편집 세션은
+                                // typeset 흐름이 재배정을 끝냈으므로 예약을 가산하지
+                                // 않고, 열람은 이중 가산(줄 y 가 이미 예약 아래)만
+                                // 차단한다.
+                                if self.profile.get().session_edited() {
+                                    0.0
+                                } else if raw > 40.0 && vars.y >= raw - 4.0 {
+                                    0.0
+                                } else {
+                                    raw
+                                }
                             };
                             if vars.raw_lh + 4.0 >= pic_h {
                                 *current_line_reserved_tac_picture_height = Some(pic_h);

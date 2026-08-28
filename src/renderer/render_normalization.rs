@@ -93,6 +93,41 @@ impl RenderNormalizationOverlay {
                         continue;
                     };
                     let path = RenderPath::top_level(section_index, parent_paragraph_index);
+                    // 최상위 글자처럼 표가 본문 폭을 근소 초과하면 한글은 본문 폭으로
+                    // 비례 축소해 그린다 — 재현 문서 C 실측: 저장 표 폭 52598HU >
+                    // 본문 폭 52158HU, 그리고 host 줄의 저장 sw=52156 이 본문 폭과
+                    // 일치(한글이 본문 폭 줄박스에 실었다는 방증). near-fit(축소율
+                    // 0.9 이상)에만 적용해 일반 대형 표 형상은 건드리지 않는다.
+                    if hwp5_stored_pagination_layout && table.common.treat_as_char {
+                        let page_def = &section.section_def.page_def;
+                        let body_width = page_def
+                            .width
+                            .saturating_sub(page_def.margin_left)
+                            .saturating_sub(page_def.margin_right);
+                        let source_width = table.common.width;
+                        if body_width > 0
+                            && source_width > body_width
+                            && f64::from(body_width) >= f64::from(source_width) * 0.9
+                        {
+                            let mut top_path = path.clone();
+                            top_path.target_control_index = Some(control_index);
+                            let table_pointer = table.as_ref() as *const Table as usize;
+                            let projection = Arc::new(NestedTableWidthProjection {
+                                path: top_path.clone(),
+                                source_width,
+                                effective_width: body_width,
+                                width_scale: f64::from(body_width) / f64::from(source_width),
+                                use_owner_content_box: false,
+                                table_pointer,
+                            });
+                            overlay
+                                .nested_table_widths_by_pointer
+                                .insert(table_pointer, Arc::clone(&projection));
+                            overlay
+                                .nested_table_widths_by_path
+                                .insert(top_path, projection);
+                        }
+                    }
                     overlay.collect_nested_tables(
                         table,
                         path,

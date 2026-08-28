@@ -3935,6 +3935,17 @@ pub(crate) fn recalculate_section_vpos(
     // 직전 문단이 이번 편집의 변조 대상이었는가 + 직전 문단에 적용된 delta.
     let mut prev_modified = false;
     let mut prev_delta: i32 = 0;
+    // 저장 좌표계의 흐름 end — 변조 구간(신규 문단은 저장 높이 0, 편집 문단은
+    // reflow 이전 캡처)을 건너뛴 "저장" 누적이다. 변조 인접 경계의 미변조 문단이
+    // 저장 first 와 이 값의 간격(자리차지 개체 소비·의도 배치 포함)을 보존할 때
+    // 기준으로 쓴다.
+    let mut stored_flow_end: Option<i32> = match prev_idx {
+        Some(pp) if pp == start_para && !is_ignored(start_para) => {
+            start_stored_end.or(orig_prev_end)
+        }
+        Some(pp) => seg_end(&paragraphs[pp]),
+        None => None,
+    };
 
     for pi in start_para..paragraphs.len() {
         if paragraphs[pi].line_segs.is_empty() {
@@ -3972,7 +3983,23 @@ pub(crate) fn recalculate_section_vpos(
             let gap = prev_idx
                 .map(|pp| boundary_gap(&paragraphs[pp], &paragraphs[pi]))
                 .unwrap_or(0);
-            next_vpos.saturating_add(gap) - current_start
+            // 저장(비합성) first 가 저장 흐름 end 보다 스타일 gap 초과로 떨어져
+            // 있으면, 그 저장 간격은 자리차지(TopAndBottom) 개체의 세로 소비나
+            // 의도 배치가 만든 것이다(재현 문서 B: 표 인코딩 9499HU·글상자 소비
+            // 24932HU). 스타일 gap 재유도는 이 간격을 소멸시켜 후속 자리차지
+            // 표가 개체들 위로 당겨지므로, 간격을 보존한 채 변조 구간의 성장분만
+            // 이동한다. reflow 는 first 를 보존하므로 편집 문단(start_para)도
+            // 대상이다. 신규 placeholder(ignore)는 저장 좌표가 없어 재유도한다.
+            // 삭제·병합 경로는 호출자가 start_stored_end 에 "사라진 문단까지 포함한
+            // 저장 흐름 end"를 전달해 삭제분이 음수 delta 로 반영된다.
+            // (±px 왕복 절삭을 넘는 초과 간격에만 발화 — gap-abutment 재유도
+            // 핀(SO-SUEOP)과 성장 편집 핀은 기존 경로 그대로다.)
+            let stored_gap_preserving = (!is_ignored(pi) && is_original_lineseg)
+                .then_some(stored_flow_end)
+                .flatten()
+                .filter(|sfe| current_start.saturating_sub(*sfe) > gap.saturating_add(2))
+                .map(|sfe| next_vpos.saturating_add(current_start - sfe) - current_start);
+            stored_gap_preserving.unwrap_or_else(|| next_vpos.saturating_add(gap) - current_start)
         } else {
             // 미변조 연속 경계 — 직전 delta 캐리로 기존 간격을 정확히 보존.
             prev_delta
@@ -3998,6 +4025,16 @@ pub(crate) fn recalculate_section_vpos(
         prev_modified = para_modified;
         prev_delta = delta;
         prev_idx = Some(pi);
+        // 저장 흐름 end 갱신 — 신규 문단(ignore)은 저장 높이 0 이라 건너뛰고,
+        // 편집 문단(start_para)은 reflow 이전 캡처를 우선한다. 미변조 문단은
+        // 이동 전(저장) end 가 그대로 저장 좌표다.
+        if is_ignored(pi) {
+            // 저장 좌표계에 없던 문단 — stored_flow_end 불변.
+        } else if pi == start_para {
+            stored_flow_end = start_stored_end.or(orig_end);
+        } else {
+            stored_flow_end = orig_end;
+        }
     }
 }
 

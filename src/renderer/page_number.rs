@@ -143,6 +143,7 @@ mod tests {
                 wrap_anchors: std::collections::HashMap::new(),
                 overlay_continuations: Vec::new(),
                 overlay_cuts: Vec::new(),
+                banner_top_reserve: 0.0,
             }],
             active_header: None,
             active_footer: None,

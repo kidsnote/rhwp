@@ -405,6 +405,13 @@ impl Document {
         .with_hwp3_password_layout(
             self.provenance.format == SourceFormat::Hwp3 && self.header.encrypted,
         )
+        // native HWP5 는 로드 시 모든 섹션이 raw_stream 을 보유한다 — 편집 명령이
+        // 이를 소실시키므로, 소실 = 이 세션의 문서 변조 신호다. HWPX/변환본은
+        // 처음부터 raw_stream 이 없어 이 신호를 쓰지 않는다(오탐 방지).
+        .with_session_edited(
+            self.provenance.format == SourceFormat::Hwp5
+                && self.sections.iter().any(|s| s.raw_stream.is_none()),
+        )
     }
 
     /// 외부 이미지 binDataId가 이미 로드되었는지 확인한다.

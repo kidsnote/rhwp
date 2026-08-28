@@ -4266,6 +4266,7 @@ impl DocumentCore {
             .with_hwp3_variant(profile.hwp3_layout())
             .with_legacy_hwp3_stored_geometry(profile.legacy_hwp3_stored_geometry())
             .with_native_hwp5(profile.native_hwp5_layout())
+            .with_session_edited(profile.session_edited())
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before);
         let column_def = Self::find_initial_column_def(paragraphs);
         let layout =
@@ -4601,6 +4602,7 @@ impl DocumentCore {
             .with_hwp3_variant(profile.hwp3_layout())
             .with_legacy_hwp3_stored_geometry(profile.legacy_hwp3_stored_geometry())
             .with_native_hwp5(profile.native_hwp5_layout())
+            .with_session_edited(profile.session_edited())
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before)
             .with_render_normalization(std::sync::Arc::clone(&self.render_normalization.overlay));
 

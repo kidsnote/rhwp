@@ -144,6 +144,7 @@ fn tac_picture_and_shape_require_partial_paragraph_page_routing() {
             wrap_anchors: Default::default(),
             overlay_continuations: Vec::new(),
             overlay_cuts: Vec::new(),
+            banner_top_reserve: 0.0,
         }],
         active_header: None,
         active_footer: None,
