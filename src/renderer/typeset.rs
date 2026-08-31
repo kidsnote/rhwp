@@ -9305,6 +9305,7 @@ impl TypesetEngine {
                         &formatted,
                         paragraphs,
                         styles,
+                        measured_tables,
                         is_last_in_section,
                     );
                 }
@@ -18047,6 +18048,7 @@ impl TypesetEngine {
         fmt: &FormattedParagraph,
         paragraphs: &[Paragraph],
         styles: &ResolvedStyleSet,
+        measured_tables: &[MeasuredTable],
         is_last_in_section: bool,
     ) {
         // [#6793] 앞 문단의 **저장 꼬리가 쪽을 채우고** 이 문단의 첫 저장 줄이
@@ -24687,8 +24689,14 @@ impl TypesetEngine {
                 };
                 forward_consistent
                     && anchor.is_some_and(|a| {
+                        // anchor 는 구역 누적 좌표일 수 있다 — 쪽 기준(vpos_page_base)으로
+                        // 상대화하지 않으면 2쪽 이후 문단(누적 vpos > 쪽 높이)에서 이
+                        // 게이트가 항상 발동해, 잔여에 행 단위로 들어갈 RowBreak 표까지
+                        // 통째로 다음 쪽에 민다(재현 문서 C Enter 5회: 2쪽 하단 표가
+                        // 마지막 행 분할 대신 3쪽으로 통째 이월 — 한글 오라클과 상이).
+                        let a = a.saturating_sub(st.vpos_page_base.unwrap_or(0));
                         let anchor_px = crate::renderer::hwpunit_to_px(a, self.dpi);
-                        if anchor_px > available + 0.5 {
+                        if a > 0 && anchor_px > available + 0.5 {
                             // anchor 자체가 본문 하단 밖 — 이 표는 이 쪽에 없다.
                             return true;
                         }

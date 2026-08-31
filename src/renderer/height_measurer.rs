@@ -4072,7 +4072,9 @@ impl HeightMeasurer {
                                 continue;
                             }
                             let mut mt = self.measure_table(table, para_idx, ctrl_idx, styles);
-                            if self.session_edited && !table.common.treat_as_char {
+                            // TAC 표 포함 — TAC 도 편집 성장 시 행 배분이 잠식된다
+                            // (재현 문서 C 라벨 행 Enter).
+                            if self.session_edited {
                                 if let Some(prev) =
                                     prev_measured.get_measured_table(para_idx, ctrl_idx)
                                 {
