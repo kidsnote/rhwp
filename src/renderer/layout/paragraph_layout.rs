@@ -3976,10 +3976,15 @@ impl LayoutEngine {
                         // 쪽에서도 쪽 하단에 그려져 잘린다(재현 문서 A 셀 끝 Enter 3~4회).
                         // 스냅 목적지가 흐름 커서보다 단 절반 이상 아래면 흐름 y 로
                         // 폴백한다. 같은 쪽 배치(괴리 소폭)는 종전 스냅을 유지한다.
+                        // 반대 방향도 같다 — 목적지가 흐름보다 8px 넘게 **위**면 편집
+                        // 성장 전 좌표라 앞 표에 겹친다(재현 문서 C 셀 Enter 5회:
+                        // 후행 안내 문구가 저장 951.9px 로 스냅돼 커진 표 하단
+                        // 977px 위에 얹힘). 8px 는 vpos_adjust 백워드 클램프와 동일.
                         && !(self.profile.get().session_edited()
                             && range.first().is_some_and(|seg| {
-                                col_area.y + hwpunit_to_px(seg.vertical_pos, self.dpi)
-                                    > y + col_area.height * 0.5
+                                let snap_y =
+                                    col_area.y + hwpunit_to_px(seg.vertical_pos, self.dpi);
+                                snap_y > y + col_area.height * 0.5 || y - snap_y > 8.0
                             }))
                     {
                         // [#3637] 기준은 **단 상단**이다 (원점 0).

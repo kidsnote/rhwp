@@ -2888,7 +2888,12 @@ impl HeightMeasurer {
         // exam_eng 선택지 표는 행당 ~3px·합 ~20px. 거대 overfill 은 수백 px.
         const TAC_FLOOR_OVERFLOW_NOSHRINK_CAP_PX: f64 = 48.0;
         let shrink_threshold = (common_h * TAC_SHRINK_THRESHOLD_RATIO).max(1.0);
+        // [편집 세션] TAC 비례 축소(아래 분기)는 저장 시점 형상 전용 보정이다 —
+        // 편집으로 셀이 자란 성장분까지 선언높이로 눌러 다른 행의 몫을 잠식한다
+        // (재현 문서 C 라벨 행 Enter: 표가 선언 688.5px 에 고정된 채 행 경계만
+        // 위로 밀림). 편집 세션은 실측을 신뢰한다.
         let table_height = if table.common.treat_as_char
+            && !self.session_edited
             && common_h > 0.0
             && raw_table_height > common_h + shrink_threshold
             && raw_table_height <= common_h * TAC_SHRINK_MAX_OVERFLOW_RATIO
@@ -3494,7 +3499,9 @@ impl HeightMeasurer {
                                 }
                             }
                             let mut mt = self.measure_table(table, para_idx, ctrl_idx, styles);
-                            if self.session_edited && !table.common.treat_as_char {
+                            // TAC 표 포함 — TAC 도 편집 성장 시 행 배분이 잠식된다
+                            // (재현 문서 C 라벨 행 Enter).
+                            if self.session_edited {
                                 if let Some(prev) =
                                     prev_measured.get_measured_table(para_idx, ctrl_idx)
                                 {
@@ -3530,7 +3537,7 @@ impl HeightMeasurer {
                         }
                     }
                     let mut mt = self.measure_table(table, para_idx, ctrl_idx, styles);
-                    if self.session_edited && !table.common.treat_as_char {
+                    if self.session_edited {
                         if let Some(prev) = prev_measured.get_measured_table(para_idx, ctrl_idx) {
                             let cs = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
                             Self::floor_rows_to_prev(&mut mt, prev, cs);
