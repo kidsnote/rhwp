@@ -4644,18 +4644,7 @@ impl LayoutEngine {
                 // 156726353 1쪽 문단 8 실측: offset 9507HU 표가 raw 954.0 → 클램프 937.0 로
                 // 끌려와 직전 줄(926.4..945.1)을 8.1px 침범(한글 952.9).
                 let host_has_painted_text = self.para_float_host_has_text.get();
-                // 셀 편집으로 실측이 선언 높이를 넘어 자란 자리차지 표는 상향 클램프를
-                // 걸지 않는다 — body_bottom 클램프가 표를 본문 바닥에 고정한 채 위로
-                // 키워 선행 개체와 겹친다(재현 문서 B 셀 Enter). 한컴은 앵커 위치를
-                // 보존하고, 넘치는 표는 페이지네이션이 다음 쪽으로 이월한다.
-                let grown_topbottom_table =
-                    matches!(table_text_wrap, crate::model::shape::TextWrap::TopAndBottom)
-                        && declared_height > 0.0
-                        && table_height > declared_height + 8.0;
-                if allow_rowbreak_object_bottom_bleed
-                    || overlay_multirow_rowbreak
-                    || grown_topbottom_table
-                {
+                if allow_rowbreak_object_bottom_bleed || overlay_multirow_rowbreak {
                     pushed.max(min_y)
                 } else {
                     let clamped = pushed.clamp(min_y, body_bottom.max(min_y));
