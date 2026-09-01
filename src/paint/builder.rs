@@ -191,27 +191,22 @@ impl LayerBuilder {
                 )
             }
             RenderNodeType::TextBox => {
-                let children = self.build_children(node);
-                // 한글은 글상자 하단을 넘는 자식 개체(하단 장식 등)를 잘라내지
-                // 않는다 — 클립 사각형의 하단만 자식 콘텐츠 최하단까지 확장한다
-                // (재현 문서 B 박스 하단 꽃 장식 실측: 저작 좌표가 박스 밖인데
-                // 한글은 테두리 밖까지 그대로 그림).
-                let content_bottom = children
-                    .iter()
-                    .map(|c| c.bounds.y + c.bounds.height)
-                    .fold(node.bbox.y + node.bbox.height, f64::max);
-                let mut clip = node.bbox;
-                clip.height = (content_bottom - clip.y).max(clip.height);
                 let child = LayerNode::group(
                     node.bbox,
                     Some(node.id),
-                    children,
+                    self.build_children(node),
                     self.cache_hint_for(&node.node_type),
                     GroupKind::TextBox,
                 );
                 Some(
-                    LayerNode::clip_rect(node.bbox, Some(node.id), clip, child, ClipKind::TextBox)
-                        .with_layer(node.layer),
+                    LayerNode::clip_rect(
+                        node.bbox,
+                        Some(node.id),
+                        node.bbox,
+                        child,
+                        ClipKind::TextBox,
+                    )
+                    .with_layer(node.layer),
                 )
             }
             _ => Some(

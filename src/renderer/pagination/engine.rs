@@ -2465,33 +2465,7 @@ impl Paginator {
                     crate::model::shape::VertRelTo::Para
                 )
                 && table.common.vertical_offset > 0;
-            // 단 오른쪽 밖으로 통째로 벗어난 자리차지 개체는 본문 세로 공간을 차지하지
-            // 않는다(재현 문서 D: horz=단 227.6mm, A4 폭 210mm — 화면 밖).
-            // typeset/layout 의 같은 가드와 짝을 이루며, 호스트 문단의 텍스트 유무와
-            // 무관하다.
-            let starts_beyond_column_right = !table.common.treat_as_char
-                && matches!(
-                    table.common.text_wrap,
-                    crate::model::shape::TextWrap::TopAndBottom
-                )
-                && matches!(
-                    table.common.horz_rel_to,
-                    crate::model::shape::HorzRelTo::Column
-                )
-                && {
-                    let column_width = st
-                        .layout
-                        .column_areas
-                        .get(st.current_column as usize)
-                        .map(|area| area.width)
-                        .unwrap_or(st.layout.body_area.width);
-                    crate::renderer::hwpunit_to_px(table.common.horizontal_offset as i32, self.dpi)
-                        >= column_width
-                };
-            if starts_beyond_column_right {
-                // 흐름을 전진시키지 않는다 — 한글은 이런 개체를 본문 배치 계산에서
-                // 제외한다.
-            } else if is_independent_float {
+            if is_independent_float {
                 let v_off =
                     crate::renderer::hwpunit_to_px(table.common.vertical_offset as i32, self.dpi);
                 let float_bottom = para_start_height + v_off + effective_height;
