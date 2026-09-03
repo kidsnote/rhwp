@@ -8410,7 +8410,23 @@ impl LayoutEngine {
                                         .get(style_id)
                                         .map(|st| (st.spacing_before, st.spacing_after))
                                         .unwrap_or((0.0, 0.0));
-                                    lines + sb.max(0.0) + sa.max(0.0)
+                                    // typeset 은 NO_LS 빈 host 문단의 줄을 composer
+                                    // placeholder(400HU≈5.3px)가 아니라 저장 글자모양의
+                                    // 완전한 em 줄박스로 계상한다(빈 문단 fallback 무조건
+                                    // 적용, #3820). 페인트도 같은 메트릭을 써야 두 장부가
+                                    // 일치한다 — placeholder 를 그대로 세면 뒤 문단 전체가
+                                    // 그 차액만큼 위로 붙는다.
+                                    let line_part =
+                                        paragraph_layout::empty_no_lineseg_paragraph_metrics(
+                                            para,
+                                            styles,
+                                            styles.para_styles.get(style_id),
+                                            self.profile.get().hwp3_layout(),
+                                            self.dpi,
+                                        )
+                                        .map(|(lh, ls, _)| lh + ls)
+                                        .unwrap_or(lines);
+                                    line_part + sb.max(0.0) + sa.max(0.0)
                                 } else {
                                     lines
                                 }

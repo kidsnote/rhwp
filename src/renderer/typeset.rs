@@ -8775,7 +8775,13 @@ impl TypesetEngine {
                                         band_y_range: None,
                                     },
                                 );
-                                col_w = col_w.min(sw_px);
+                                // 합성 감폭 상자는 비례 초과를 허용한다 — 계상 글자
+                                // 폭(전각 em 휴리스틱)이 한글 실측 advance 보다 넓어,
+                                // 한글이 넣은 마지막 어절이 밀려 줄 수가 정답과
+                                // 갈라진다(재현: 강제 개행 줄의 마지막 어절이 다음
+                                // 줄로 넘어가 아래 구획과 겹침).
+                                let fit_slack = crate::renderer::synth_wrap_fit_slack_px(sw_px);
+                                col_w = col_w.min(sw_px + fit_slack);
                             }
                         }
                     }
