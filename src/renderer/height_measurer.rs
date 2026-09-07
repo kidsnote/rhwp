@@ -1497,7 +1497,28 @@ impl HeightMeasurer {
                             // [#2169] om 가산은 additive 경로(cell_controls_height)
                             // 전담 — vpos 기반 max 경로는 저장 vpos 가 배치를 이미
                             // 반영하므로 미가산 (자기-export HWPX 왕복 이중가산 방지).
-                            Some(mt.total_height.max(declared))
+                            let mut h = mt.total_height.max(declared);
+                            // 가시 텍스트 host 의 vrel=Para 어울림 표는 렌더가
+                            // para_y + voff 에 놓으므로, 셀 높이 계상에도 voff 를
+                            // 더해야 행이 그만큼 자라 표 하단 여백이 보존된다
+                            // (렌더 table_layout 의 동일 술어 갈래와 정합).
+                            if h > 0.0
+                                && !nested.common.treat_as_char
+                                && matches!(
+                                    nested.common.vert_rel_to,
+                                    crate::model::shape::VertRelTo::Para
+                                )
+                                && nested.common.flow_with_text
+                                && !p.text.trim().is_empty()
+                            {
+                                h += hwpunit_to_px(
+                                    crate::renderer::float_placement::signed_hwpunit(
+                                        nested.common.vertical_offset,
+                                    ),
+                                    self.dpi,
+                                );
+                            }
+                            Some(h)
                         } else {
                             None
                         }

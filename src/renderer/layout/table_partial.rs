@@ -2585,10 +2585,65 @@ impl LayoutEngine {
                                     } else {
                                         tac_text_offset.min(inner_area.width)
                                     };
+                                    // 분할(부분 표) 경로도 비분할 경로와 같은 줄 시작을
+                                    // 써야 한다 — 선행 텍스트 폭만 더하고 문단 왼 여백·
+                                    // 정렬을 무시하면, 쪽나눔이 생기는 순간에만 글자처럼
+                                    // 표가 칸 왼끝으로 26.7px 이동한다(웹기안기 실측:
+                                    // 분할 여부와 무관하게 같은 x). 정렬 폭은 outMargin
+                                    // 좌/우 포함(#3396). 선행 텍스트 초과 좌측 폴백은
+                                    // 종전 유지.
+                                    let tac_line_start = if nested_table.common.treat_as_char
+                                        && !(tac_text_offset > 0.0
+                                            && tac_text_offset + nested_w > inner_area.width + 0.5)
+                                    {
+                                        let om_l = hwpunit_to_px(
+                                            nested_table.outer_margin_left as i32,
+                                            self.dpi,
+                                        );
+                                        let om_r = hwpunit_to_px(
+                                            nested_table.outer_margin_right as i32,
+                                            self.dpi,
+                                        );
+                                        let line_w = tac_text_offset + nested_w + om_l + om_r;
+                                        match para_alignment {
+                                            Alignment::Center | Alignment::Distribute => {
+                                                (inner_area.width - line_w).max(0.0) / 2.0
+                                            }
+                                            Alignment::Right => {
+                                                (inner_area.width - line_w).max(0.0)
+                                            }
+                                            _ => effective_margin_left_line(
+                                                para_margin_left,
+                                                para_indent,
+                                                0,
+                                            ),
+                                        }
+                                    } else {
+                                        0.0
+                                    };
+                                    let tac_x_offset =
+                                        (tac_line_start + tac_x_offset).min(inner_area.width);
+                                    // hrel=Para 어울림 표는 host 문단 왼 여백이
+                                    // 수평 기준이다 — 비분할 경로(table_layout)와
+                                    // 동일 규칙. 글자처럼 출신(블록 취급 포함)은 제외.
+                                    let para_rel_left = if !nested_table.common.treat_as_char
+                                        && matches!(
+                                            nested_table.common.horz_rel_to,
+                                            crate::model::shape::HorzRelTo::Para
+                                        ) {
+                                        styles
+                                            .para_styles
+                                            .get(para.para_shape_id as usize)
+                                            .map(|st| st.margin_left)
+                                            .unwrap_or(0.0)
+                                    } else {
+                                        0.0
+                                    };
                                     let ctrl_area = LayoutRect {
-                                        x: inner_area.x + tac_x_offset,
+                                        x: inner_area.x + tac_x_offset + para_rel_left,
                                         y: nested_y,
-                                        width: (inner_area.width - tac_x_offset).max(0.0),
+                                        width: (inner_area.width - tac_x_offset - para_rel_left)
+                                            .max(0.0),
                                         height: available_h,
                                     };
 

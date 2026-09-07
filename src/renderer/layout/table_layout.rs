@@ -5135,6 +5135,57 @@ impl LayoutEngine {
                 // LINE_SEG vpos가 문단 위치를 정확히 지정하므로,
                 // 추가 spacing 없이 para_y를 그대로 사용.
                 // (leading spacing은 LINE_SEG vpos에 이미 반영되어 있음)
+                //
+                // host 문단에 가시 텍스트가 있으면 먼저 일반 문단으로 렌더한다 —
+                // 종전에는 아래 컨트롤 루프가 표만 그려서, 어울림 표를 안은 제목
+                // 줄("교사 연차 안내" 형)이 통째로 소실됐다. 아래 루프의 표 배치는
+                // 텍스트와 독립(저장 vpos/voff 기준)이라 중복이 없고, 표 자체는
+                // layout_composed_paragraph 가 그리지 않으므로 이중 방출도 없다.
+                // attr bit0 를 가진 표는 종전의 "표 앞 텍스트 나란히" 블록이
+                // 담당하므로 제외해 이중 렌더를 막는다.
+                let any_attr_inline_text_table = para.controls.iter().any(|c| {
+                    matches!(c, Control::Table(t) if !t.common.treat_as_char && t.attr & 0x01 != 0)
+                });
+                let host_has_visible_text = composed
+                    .lines
+                    .iter()
+                    .any(|line| line.runs.iter().any(|run| !run.text.trim().is_empty()));
+                if host_has_visible_text && !any_attr_inline_text_table {
+                    let is_last_para = cp_idx + 1 == composed_paras.len();
+                    // 텍스트를 저장 vpos 축에 그린다 — 이 갈래의 표 배치는 저장
+                    // vpos/voff 기준(para_y)이고, layout_composed_paragraph 는
+                    // 넘긴 y 에 spacing_before 를 다시 더하므로 그만큼 선차감해
+                    // 넘겨야 텍스트가 표 앵커와 같은 축에 놓인다(웹기안기 실측:
+                    // 텍스트 줄 하단과 표 상단 간격 3.0px = 저장 좌표 그대로.
+                    // 선차감 없이는 텍스트가 +12.6px 내려가 표 첫 행과 겹친다).
+                    // para_y 는 전진시키지 않는다 — 커서를 밀면 앵커 표가 함께
+                    // 내려가 셀 하단 여백을 잡아먹고 표 높이가 잔여에 눌린다.
+                    let text_spacing_before = styles
+                        .para_styles
+                        .get(composed.para_style_id as usize)
+                        .map(|st| st.spacing_before)
+                        .unwrap_or(0.0);
+                    let _text_bottom = self.layout_composed_paragraph(
+                        tree,
+                        cell_node,
+                        composed,
+                        styles,
+                        &inner_area,
+                        para_y - text_spacing_before,
+                        start_line,
+                        end_line,
+                        section_index,
+                        cp_idx,
+                        cell_context.clone(),
+                        !use_top_vpos_anchor,
+                        is_last_para,
+                        0.0,
+                        None,
+                        Some(para),
+                        Some(bin_data_content),
+                        None,
+                    );
+                }
             }
 
             let para_alignment = styles
@@ -6249,6 +6300,30 @@ impl LayoutEngine {
                         } else {
                             inner_area.y
                         };
+                        // vrel=Para 어울림 중첩 표의 세로 오프셋 — host 문단
+                        // 기준(voff)이 이 갈래에서 통째로 빠져 있었다. host 에
+                        // 가시 텍스트가 있는 문단(제목 줄이 표를 안은 형)에서
+                        // 표가 텍스트 줄 위 대역에 그려져 겹친다(웹기안기 실측:
+                        // 표 상단 = 문단 시작 + voff = 텍스트 줄 하단 + 3px).
+                        // 빈 host 는 종전 배치(voff 를 다른 층이 소화)와의 회귀를
+                        // 피하기 위해 종전대로 둔다.
+                        let host_visible_text_for_voff = composed
+                            .lines
+                            .iter()
+                            .any(|l| l.runs.iter().any(|r| !r.text.trim().is_empty()));
+                        let nested_y = if !is_tac_table
+                            && host_visible_text_for_voff
+                            && matches!(nested_table.common.vert_rel_to, VertRelTo::Para)
+                            && nested_table.common.flow_with_text
+                        {
+                            nested_y
+                                + hwpunit_to_px(
+                                    signed_hwpunit(nested_table.common.vertical_offset),
+                                    self.dpi,
+                                )
+                        } else {
+                            nested_y
+                        };
                         // [#3637] 중첩 표는 부모 셀 안에서 시작해야 한다. 앞 텍스트가 셀
                         // 밖으로 밀린 `para_y` 를 그대로 쓰면 컨테이너가 통째로 셀 아래에
                         // 놓여 쪽 밖으로 나간다(80550 29쪽: 셀 310~889 인데 중첩2가
@@ -6545,10 +6620,24 @@ impl LayoutEngine {
                                 }
                                 cell_node.children.push(line_node);
                             }
+                            // hrel=Para 어울림 표의 수평 기준은 칸이 아니라 host
+                            // 문단 박스다 — 문단 왼 여백을 더해야 hoff 가 문단
+                            // 원점에서 적용된다(오라클 캡처: 표 좌단 = 문단 시작 +
+                            // hoff + outMargin). 칸 기준(hrel=Column 등)은 종전 유지.
+                            let para_rel_left = if !nested_table.common.treat_as_char
+                                && matches!(
+                                    nested_table.common.horz_rel_to,
+                                    crate::model::shape::HorzRelTo::Para
+                                ) {
+                                effective_margin_left_line(para_margin_left_px, para_indent_px, 0)
+                            } else {
+                                0.0
+                            };
                             let ctrl_area = LayoutRect {
-                                x: inner_area.x + tac_text_offset,
+                                x: inner_area.x + tac_text_offset + para_rel_left,
                                 y: nested_y,
-                                width: (inner_area.width - tac_text_offset).max(0.0),
+                                width: (inner_area.width - tac_text_offset - para_rel_left)
+                                    .max(0.0),
                                 height: (inner_area.height - (nested_y - inner_area.y)).max(0.0),
                             };
                             // 이 셀 조각의 unit cut이 만든 중첩 표 slice를 다음 깊이에도
@@ -7636,7 +7725,25 @@ impl LayoutEngine {
                     .iter()
                     .map(|ctrl| {
                         if let Control::Table(t) = ctrl {
-                            self.calc_nested_table_height(t, styles)
+                            let mut h = self.calc_nested_table_height(t, styles);
+                            // 가시 텍스트 host 의 vrel=Para 어울림 표는 렌더가
+                            // para_y + voff 에 놓으므로(동일 술어의 렌더 갈래),
+                            // 행 높이 계상에도 voff 를 더해야 행이 그만큼 자라
+                            // 표 하단 여백이 보존된다(웹기안기 실측: 행이 표
+                            // 하단 + ~11px). voff 누락 시 표가 행 잔여에 눌려
+                            // 잘리고 다음 행과 밀착한다.
+                            if h > 0.0
+                                && !t.common.treat_as_char
+                                && matches!(t.common.vert_rel_to, VertRelTo::Para)
+                                && t.common.flow_with_text
+                                && !p.text.trim().is_empty()
+                            {
+                                h += hwpunit_to_px(
+                                    signed_hwpunit(t.common.vertical_offset),
+                                    self.dpi,
+                                );
+                            }
+                            h
                         } else {
                             0.0
                         }
