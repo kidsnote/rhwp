@@ -94,6 +94,11 @@ pub(crate) struct HeightCursor {
     pub vpos_page_base: Option<i32>,
     /// 지연 기준 vpos. 첫 PageItem 이 신뢰 불가할 때 sequential y 에서 역산 (#412).
     pub vpos_lazy_base: Option<i32>,
+    /// native HWP5 의 저장 vpos 는 쪽 상대 절대 좌표 —
+    /// page_base 가 소거된 상황에서도 lazy 역산(부정확 기준) 대신 base=0 페이지
+    /// 경로를 쓴다 (재현 문서 C pi4: lazy 2748 로 저장 958 대신 921 에 그려져
+    /// 꽃 장식과 겹치던 실측).
+    pub native_page_relative: bool,
     /// 직전 배치 문단 인덱스.
     pub prev_layout_para: Option<usize>,
     /// 직전 항목이 분할 표(PartialTable)였는지 (#991).
@@ -178,6 +183,7 @@ impl HeightCursor {
             suppress_large_forward_jump,
             suppress_hwpx_stale_forward: false,
             uniform_filler_ladder: false,
+            native_page_relative: false,
             endnote_between_notes_hu: 0,
             prev_item_content_bottom_y: None,
             last_compacted_endnote_title_gap: false,
@@ -256,8 +262,29 @@ impl HeightCursor {
             .and_then(|p| p.line_segs.first())
             .map(|ls| ls.vertical_pos);
         // [Task #412] page_base / lazy_base 경로 분리.
+        let mut native_forced = false;
         let (base, is_page_path) = if let Some(b) = self.vpos_page_base {
             (b, true)
+        } else if self.native_page_relative && {
+            // native 쪽 상대 폴백 — 실제 보정값과 같은 기준(prev_vpos_end)으로
+            // 세 조건을 모두 요구한다:
+            // ① prev 끝 vpos 가 단 높이 이내(쪽 상대로 해석 가능)
+            // ② 쪽 상대 좌표가 현재 흐름보다 의미 있게 앞(+8px 이상) — 후방·미세
+            //    보정은 lazy 가 정합(rowbreak p13 -2.3px 실측)
+            // ③ lazy 경로가 실질 보정을 만들지 못함(±2px no-op) — 재현 문서 C
+            //    pi4 실측(lazy 결과 = 진입값, 저장 958 을 못 살림)
+            let page_end = self.col_area_y + (prev_vpos_end as f64) / 7200.0 * self.dpi;
+            let lazy_noop = self.vpos_lazy_base.map_or(true, |lb| {
+                let lazy_end = self.col_area_y + ((prev_vpos_end - lb) as f64) / 7200.0 * self.dpi;
+                (lazy_end - y_offset).abs() <= 2.0
+            });
+            prev_vpos_end >= 0
+                && (prev_vpos_end as f64) <= self.col_area_height * 7200.0 / self.dpi + 1000.0
+                && page_end >= y_offset + 8.0
+                && lazy_noop
+        } {
+            native_forced = true;
+            (0, true)
         } else if let Some(b) = self.vpos_lazy_base {
             (b, false)
         } else {
@@ -1335,7 +1362,13 @@ impl HeightCursor {
                 .unwrap_or(false)
             || compact_no_separator_large_title_tail_gap;
         if std::env::var("RHWP_VPOS_DEBUG").is_ok() {
-            let path = if is_page_path { "page" } else { "lazy" };
+            let path = if native_forced {
+                "native"
+            } else if is_page_path {
+                "page"
+            } else {
+                "lazy"
+            };
             eprintln!(
                 "VPOS_CORR: path={} pi={} prev_pi={} prev_vpos={} prev_lh={} prev_ls={} vpos_end={} base={} col_y={:.2} y_in={:.2} end_y={:.2} result={:.2} stale_forward={} large_gap_body_stale={} current_title={} title_bottom={} page_tail={} equation_tail={} single_tail={} zero_gap_title={} compact_new_note={} compact_stale_note_gap={} compact_tac_pic_gap={} compact_bottom_rewind={} compact_deep_backtrack={} compact_safe_backtrack={} applied={}",
                 path, item_para, prev_pi, seg.vertical_pos, seg.line_height, seg.line_spacing,
