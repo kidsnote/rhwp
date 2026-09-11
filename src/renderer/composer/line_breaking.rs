@@ -4133,10 +4133,21 @@ pub(crate) fn recalculate_section_vpos(
             // 저장 흐름 end"를 전달해 삭제분이 음수 delta 로 반영된다.
             // (±px 왕복 절삭을 넘는 초과 간격에만 발화 — gap-abutment 재유도
             // 핀(SO-SUEOP)과 성장 편집 핀은 기존 경로 그대로다.)
+            // 보존 대상은 **개체 규모**의 간격이다 — 스타일 gap 을 뺀 초과분이 다음
+            // 문단 첫 줄 높이에도 못 미치면(줄 하나도 못 들어가는 틈) 개체 소비가
+            // 아니라 저장 좌표의 잔차·왕복 절삭이다. 그런 틈까지 보존하면 편집 뒤
+            // 다음 문단이 저장 흐름 end 에서 그만큼 떠서 업스트림의 재유도 계약
+            // (`bulk_replace_materializes_a_current_body_partition`: 100HU 틈 →
+            // following.vpos == paragraph_flow_end)과 갈린다.
+            let first_line_height = paragraphs[pi].line_segs[0].line_height.max(1);
             let stored_gap_preserving = (!is_ignored(pi) && is_original_lineseg)
                 .then_some(stored_flow_end)
                 .flatten()
-                .filter(|sfe| current_start.saturating_sub(*sfe) > gap.saturating_add(2))
+                .filter(|sfe| {
+                    let stored_gap = current_start.saturating_sub(*sfe);
+                    stored_gap > gap.saturating_add(2)
+                        && stored_gap.saturating_sub(gap) >= first_line_height
+                })
                 .map(|sfe| next_vpos.saturating_add(current_start - sfe) - current_start);
             stored_gap_preserving.unwrap_or_else(|| next_vpos.saturating_add(gap) - current_start)
         } else {
