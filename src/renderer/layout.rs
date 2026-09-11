@@ -1933,6 +1933,54 @@ fn native_multiline_visible_float_table_top(
     )
 }
 
+/// native HWP5 에서 자리차지 float 표의 host 저장 lineseg 가
+/// 본문 바닥(±1mm)에 붙어 있으면, 한글은 표 밴드(외곽여백 포함)를 본문 하단에 정렬해
+/// 그린다 — 재현 문서 B 실측: 저장 anchor 983.7px ≈ body 982.7px 인데 흐름 배치(605px)는
+/// 선행 도형들과 겹쳤다. 표 상단을 "본문 하단 − 표 밴드"로 되돌린다. paint 전용이며
+/// 흐름 전진은 호출부가 보존한다. 저장 줄이 정확히 1개이고, 전방 이동(≥30px)이며,
+/// 밴드가 본문 안에 들어올 때만 발동한다.
+fn native_bottom_glued_float_table_top(
+    native_hwp5_layout: bool,
+    para: &Paragraph,
+    table: &crate::model::table::Table,
+    col_area: &LayoutRect,
+    flow_y: f64,
+    dpi: f64,
+) -> Option<f64> {
+    if !native_hwp5_layout || table.common.treat_as_char || !is_para_topbottom_float(&table.common)
+    {
+        return None;
+    }
+    let stored: Vec<_> = para
+        .line_segs
+        .iter()
+        .filter(|seg| seg.tag & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0)
+        .collect();
+    let [s0] = stored.as_slice() else {
+        return None;
+    };
+    let anchor_px = hwpunit_to_px(s0.vertical_pos, dpi);
+    let band = hwpunit_to_px(
+        table.common.height as i32
+            + table.outer_margin_top as i32
+            + table.outer_margin_bottom as i32,
+        dpi,
+    );
+    // 저장 anchor 줄 바로 위에 표 밴드가 오는 배치: top = anchor − band.
+    // anchor 가 단 높이의 85% 이상(사실상 바닥 줄)일 때만, 그리고 흐름 위치보다
+    // 30px 이상 아래로만 이동한다(전방 한정 — 후방 이동은 다른 계약과 충돌).
+    let top = col_area.y + anchor_px - band;
+    let fits = top + band <= col_area.y + col_area.height + 3.8;
+    let anchor_near_bottom = anchor_px >= col_area.height * 0.85;
+    if std::env::var("RHWP_DIAG_BOTGLUE").is_ok() {
+        eprintln!(
+            "DIAG_BOTGLUE anchor={:.1} col_h={:.1} band={:.1} top={:.1} flow_y={:.1} near_bottom={} fits={}",
+            anchor_px, col_area.height, band, top, flow_y, anchor_near_bottom, fits,
+        );
+    }
+    (anchor_near_bottom && fits && top > flow_y + 30.0).then_some(top)
+}
+
 fn inline_equation_count(para: &Paragraph) -> usize {
     para.controls
         .iter()
@@ -2966,6 +3014,7 @@ mod anchor_box_flow;
 mod border_rendering;
 mod fixed_textbox_flow;
 mod paragraph_layout;
+pub(crate) use paragraph_layout::no_ls_tac_object_line_min_flow_px;
 mod picture_footnote;
 mod shape_layout;
 mod table_cell_content;
@@ -5909,7 +5958,7 @@ impl LayoutEngine {
                 }
             }
 
-            let col_area = if current_zone_start_y > col_area_base.y {
+            let mut col_area = if current_zone_start_y > col_area_base.y {
                 LayoutRect {
                     x: col_area_base.x,
                     y: current_zone_start_y,
@@ -5920,6 +5969,12 @@ impl LayoutEngine {
             } else {
                 *col_area_base
             };
+            // 쪽 머리 승격 쪽의 잔여 단은 배너 아래에서 시작한다 — typeset 의
+            // fit 이 선점한 상단 예약을 실제 y 에도 동일하게 반영한다.
+            if col_content.banner_top_reserve > 0.0 {
+                col_area.y += col_content.banner_top_reserve;
+                col_area.height = (col_area.height - col_content.banner_top_reserve).max(0.0);
+            }
 
             let (col_node, y_offset) = self.build_single_column(
                 tree,
@@ -6187,6 +6242,7 @@ impl LayoutEngine {
             inline_placements: Default::default(),
             inline_flow_plans: Default::default(),
             paragraph_float_placements: Default::default(),
+            banner_top_reserve: 0.0,
         };
         let page_content = PageContent {
             page_index: 0,
@@ -6725,6 +6781,8 @@ impl LayoutEngine {
                 _ => None,
             }
         });
+        // (base=0 무차별 부여는 다쪽 분할표 연속 컬럼에서 오작동 — HeightCursor 의
+        // native_page_relative 전방 게이트가 필요 시점에만 쪽 상대 경로를 취한다.)
         // [Task #1027 Stage C] inter-item VPOS_CORR 상태머신을 HeightCursor 로 캡슐화.
         // vpos_page_base/lazy_base, prev_layout_para, prev_item_was_partial_table(#991:
         // 분할 표 직후 첫 문단은 sequential 신뢰)를 보유하며 항목 사이 vpos 보정을 위임.
@@ -6751,6 +6809,7 @@ impl LayoutEngine {
         }
         hcursor.uniform_filler_ladder = self.uniform_filler_ladder.get();
         hcursor.session_edited = self.profile.get().session_edited();
+        hcursor.native_page_relative = self.profile.get().hwp5_stored_pagination_layout();
         // [Task #1246] 미주 흐름 컬럼에만 between-notes 마진(HU)을 주입 → HeightCursor 가 새 미주
         // 제목 forward 흐름의 min-gap 보정에 사용. 본문 컬럼은 0 (무영향).
         if col_content.endnote_flow {
@@ -9061,12 +9120,54 @@ impl LayoutEngine {
                                         .get(style_id)
                                         .map(|st| (st.spacing_before, st.spacing_after))
                                         .unwrap_or((0.0, 0.0));
-                                    lines + sb.max(0.0) + sa.max(0.0)
+                                    // typeset 은 NO_LS 빈 host 문단의 줄을 composer
+                                    // placeholder(400HU≈5.3px)가 아니라 저장 글자모양의
+                                    // 완전한 em 줄박스로 계상한다(빈 문단 fallback 무조건
+                                    // 적용, #3820). 페인트도 같은 메트릭을 써야 두 장부가
+                                    // 일치한다 — placeholder 를 그대로 세면 뒤 문단 전체가
+                                    // 그 차액만큼 위로 붙는다.
+                                    let line_part =
+                                        paragraph_layout::empty_no_lineseg_paragraph_metrics(
+                                            para,
+                                            styles,
+                                            styles.para_styles.get(style_id),
+                                            self.profile.get().hwp3_layout(),
+                                            self.dpi,
+                                        )
+                                        .map(|(lh, ls, _)| lh + ls)
+                                        .unwrap_or(lines);
+                                    line_part + sb.max(0.0) + sa.max(0.0)
                                 } else {
                                     lines
                                 }
                             });
                             return (y_offset + advance, false);
+                        }
+                        // NO_LS 문서의 Square 등 흐름
+                        // 상호작용 앵커 빈 문단은 한글이 완전한 em 줄박스를 예약한다
+                        // (사용안내 pi1/pi6 실측 27.7px — PrvImage 줄 좌표 대조).
+                        // 위 사다리 계약(Square ladder 뒤집힘 반증)은 저장 lineseg 가
+                        // 있는 문단 얘기이므로 NO_LS 한정으로만 전진을 부여한다.
+                        let para_no_ls = !para.line_segs.iter().any(|seg| {
+                            seg.tag & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY
+                                == 0
+                        });
+                        if para_no_ls {
+                            let para_style_id = composed
+                                .get(*para_index)
+                                .map(|c| c.para_style_id as usize)
+                                .unwrap_or(para.para_shape_id as usize);
+                            if let Some((lh, ls, _)) =
+                                paragraph_layout::empty_no_lineseg_paragraph_metrics(
+                                    para,
+                                    styles,
+                                    styles.para_styles.get(para_style_id),
+                                    self.profile.get().hwp3_layout(),
+                                    self.dpi,
+                                )
+                            {
+                                return (y_offset + lh + ls, false);
+                            }
                         }
                         return (y_offset, false);
                     }
@@ -10511,6 +10612,31 @@ impl LayoutEngine {
                         table_y_start
                     }
                 };
+                // 저장 anchor 가 본문 바닥에 붙은 자리차지
+                // float 표는 흐름 위치가 아니라 본문 하단 정렬로 그린다(전방 이동 한정).
+                let table_y_start = native_bottom_glued_float_table_top(
+                    self.profile.get().hwp5_stored_pagination_layout(),
+                    para,
+                    t,
+                    col_area,
+                    table_y_start,
+                    self.dpi,
+                )
+                .filter(|_| {
+                    // 셀 편집으로 실측이 선언 밴드보다 자란 표가 다음 쪽으로 이월되어
+                    // 새 쪽 상단(흐름이 상단 1/3 안)에서 그려질 때는 낡은 바닥 anchor
+                    // 를 버리고 흐름 위치(새 쪽 상단)에 그린다 — 한컴은 이월된 표를
+                    // 새 쪽 상단부터 아래로 배치한다(재현 문서 B 셀 Enter 실측).
+                    let declared_band = hwpunit_to_px(
+                        t.common.height as i32
+                            + t.outer_margin_top as i32
+                            + t.outer_margin_bottom as i32,
+                        self.dpi,
+                    );
+                    let grown = table_visual_height > declared_band + 8.0;
+                    !(grown && table_y_start < col_area.y + col_area.height * 0.3)
+                })
+                .unwrap_or(table_y_start);
                 let allow_para_top_bleed =
                     is_current_visible_para_float && signed_hwpunit(t.common.vertical_offset) < 0;
                 // 이월된 빈 RowBreak 그림 표의 stale negative picture offset은 native
@@ -10645,6 +10771,13 @@ impl LayoutEngine {
                 } else {
                     None
                 };
+                // 단 오른쪽 밖으로 통째로 벗어난 자리차지 개체는 본문 세로 공간을 차지하지
+                // 않는다(재현 문서 D: horz=단 227.6mm, A4 폭 210mm — 화면 밖).
+                // typeset 의 같은 가드와 짝을 이루며, 호스트 문단의 텍스트 유무와 무관하다.
+                let starts_beyond_column_right =
+                    matches!(t.common.horz_rel_to, crate::model::shape::HorzRelTo::Column)
+                        && hwpunit_to_px(t.common.horizontal_offset as i32, self.dpi)
+                            >= col_area.width;
                 y_offset = if is_current_visible_para_float {
                     let mut flow_y = if signed_hwpunit(t.common.vertical_offset) > 0 {
                         if issue2439_visible_host_stack {
@@ -10756,6 +10889,10 @@ impl LayoutEngine {
                     // [#4533 ⑥] 표는 예약 공간(앵커 위)에 이미 놓였다 — 흐름은
                     // 전진하지 않는다(앵커·후속 문단이 사다리 위치 유지).
                     table_y_before
+                } else if starts_beyond_column_right && is_para_topbottom_float(&t.common) {
+                    // 편집으로 앵커가 빈 문단에 남은 단 오른쪽 밖 자리차지 표 —
+                    // visible host 경로와 동일하게 흐름을 전진시키지 않는다.
+                    table_y_before
                 } else {
                     empty_rowbreak_flow_end.unwrap_or(table_flow_end)
                 };
@@ -10766,6 +10903,7 @@ impl LayoutEngine {
                             if is_para_topbottom_float(&following.common))
                     });
                 if is_current_visible_para_float
+                    && !starts_beyond_column_right
                     && (signed_vertical_offset > 0 || zero_offset_has_following_coanchored_float)
                     && table_visual_height > 0.0
                 {
@@ -12656,9 +12794,23 @@ impl LayoutEngine {
                         // (wrap 처리 포함) 뒤로 옮김. 그 전에는 placeholder 로 default 값 사용.
                         let _ = is_single_pic;
                         let comp = composed.get(para_index);
-                        let para_y_for_pic =
-                            para_start_y.get(&para_index).copied().unwrap_or(y_offset)
-                                + sibling_reserved_px;
+                        // sibling 자리차지 표 예약은 통짜 배치 가정이다 — 표가 분할
+                        // 이월된 쪽에서는 "문단 시작 + 전체 표 높이"가 단 하단을 넘어
+                        // tac 그림이 쪽 밖에 그려진다(재현 문서 A 셀 Enter: 로고만
+                        // 쪽 하단 밖). 그때는 흐름 y(분할 조각·후행 텍스트 뒤)로
+                        // 폴백한다.
+                        let para_y_for_pic = {
+                            let reserved_based =
+                                para_start_y.get(&para_index).copied().unwrap_or(y_offset)
+                                    + sibling_reserved_px;
+                            if sibling_reserved_px > 0.0
+                                && reserved_based > col_area.y + col_area.height + 60.0
+                            {
+                                y_offset
+                            } else {
+                                reserved_based
+                            }
+                        };
                         let default_pic_y = self.compute_tac_picture_shape_y(
                             para,
                             comp,
@@ -14063,14 +14215,29 @@ impl LayoutEngine {
                     let inline_y = self
                         .compute_tac_picture_shape_y(para, comp, styles, para_y, shape_h)
                         + hwpunit_to_px(signed_hwpunit(common.vertical_offset), self.dpi);
-                    tree.set_inline_shape_position(
-                        page_content.section_index,
-                        para_index,
-                        control_index,
-                        None,
-                        inline_x,
-                        inline_y,
-                    );
+                    // comp 줄 누적은 통짜 배치 가정이다 — host 표가 분할 이월된
+                    // 쪽에서는 표 줄 전체 높이가 누적되어 y 가 단 밖으로 나간다
+                    // (재현 문서 A 셀 Enter: 로고 1196px > 단 하단). 그때는 텍스트
+                    // 줄 렌더가 실제 줄 위치로 등록해 둔 기존 좌표를 존중한다.
+                    let stale_computed = inline_y > col_area.y + col_area.height + 60.0
+                        && tree
+                            .get_inline_shape_position(
+                                page_content.section_index,
+                                para_index,
+                                control_index,
+                                None,
+                            )
+                            .is_some();
+                    if !stale_computed {
+                        tree.set_inline_shape_position(
+                            page_content.section_index,
+                            para_index,
+                            control_index,
+                            None,
+                            inline_x,
+                            inline_y,
+                        );
+                    }
                 }
                 self.layout_shape(
                     tree,

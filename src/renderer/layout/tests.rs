@@ -581,6 +581,7 @@ fn test_build_page_with_paragraph() {
         section_index: 0,
         layout,
         column_contents: vec![ColumnContent {
+            banner_top_reserve: 0.0,
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,
@@ -663,6 +664,7 @@ fn partial_paragraph_start_line_beyond_lines_does_not_panic() {
         section_index: 0,
         layout,
         column_contents: vec![ColumnContent {
+            banner_top_reserve: 0.0,
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,
@@ -774,6 +776,7 @@ fn test_layout_with_composed_styles() {
         section_index: 0,
         layout,
         column_contents: vec![ColumnContent {
+            banner_top_reserve: 0.0,
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,
@@ -910,6 +913,7 @@ fn test_layout_multi_run_x_position() {
         section_index: 0,
         layout,
         column_contents: vec![ColumnContent {
+            banner_top_reserve: 0.0,
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,
@@ -1294,6 +1298,7 @@ fn test_layout_table_basic() {
         section_index: 0,
         layout,
         column_contents: vec![ColumnContent {
+            banner_top_reserve: 0.0,
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,
@@ -1452,6 +1457,7 @@ fn test_layout_table_cell_positions() {
         section_index: 0,
         layout,
         column_contents: vec![ColumnContent {
+            banner_top_reserve: 0.0,
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,

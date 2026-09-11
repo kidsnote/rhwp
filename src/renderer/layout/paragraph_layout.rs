@@ -576,17 +576,35 @@ fn paragraph_active_text_style(
 /// `compose_paragraph()` 는 렌더러 내부 안내용 400HU 줄을 남기지만, HWP5 원본의
 /// 빈 문단 높이는 그 값이 아니라 글자 모양과 ParaShape 줄간격에서 결정된다.
 /// HWP3 변환본만 기존 page-count 계약을 위해 작은 글꼴 cap을 유지한다.
-fn empty_no_lineseg_paragraph_metrics(
+pub(crate) fn empty_no_lineseg_paragraph_metrics(
     para: &Paragraph,
     styles: &ResolvedStyleSet,
     para_style: Option<&crate::renderer::style_resolver::ResolvedParaStyle>,
     hwp3_legacy_caps: bool,
     dpi: f64,
 ) -> Option<(f64, f64, f64)> {
+    // typeset 쪽 empty_paragraph_fallback_line_metrics 와
+    // 동일 완화 — 비자리차지(글앞/글뒤/어울림) 앵커 도형·그림만 가진 빈 문단도 한글은
+    // 완전한 em 줄박스를 부여한다. 두 장부(판정·그리기)가 같은 규칙을 가져야 렌더 y 와
+    // 단 경계가 일치한다.
+    let controls_flow_neutral = para.controls.iter().all(|c| {
+        let common = match c {
+            crate::model::control::Control::Picture(p) => &p.common,
+            crate::model::control::Control::Shape(s) => s.common(),
+            _ => return false,
+        };
+        !common.treat_as_char
+            && matches!(
+                common.text_wrap,
+                crate::model::shape::TextWrap::InFrontOfText
+                    | crate::model::shape::TextWrap::BehindText
+                    | crate::model::shape::TextWrap::Square
+            )
+    });
     if !para.text.trim().is_empty()
-        || !para.controls.is_empty()
+        || !(para.controls.is_empty() || controls_flow_neutral)
         || !para.line_segs.is_empty()
-        || para.char_count == 0
+        || (para.char_count == 0 && para.controls.is_empty())
     {
         return None;
     }
@@ -788,6 +806,42 @@ fn tac_owned_by_prior_empty_line(comp: &ComposedParagraph, line_idx: usize, pos:
     comp.lines
         .get(line_idx - 1)
         .is_some_and(|prev| prev.runs.is_empty() && prev.char_start == pos)
+}
+
+/// 합성 lineseg(저장 조판 없음) 문단에서 tac 그림/도형이 실린 줄의 최소 전진
+/// 높이(px). 한글은 글자처럼 개체가 줄 높이를 개체 높이만큼 키우는데, 저장
+/// lineseg 문단은 저장 lh 가 이를 이미 반영하므로 합성 문단만 대상이다.
+pub(crate) fn no_ls_tac_object_line_min_flow_px(
+    para: &crate::model::paragraph::Paragraph,
+    comp: &ComposedParagraph,
+    line_idx: usize,
+    dpi: f64,
+) -> Option<f64> {
+    if para.line_segs.iter().any(|ls| ls.tag & 0x80000000 == 0) {
+        return None; // 저장 lineseg 보유 — 저장 lh 신뢰
+    }
+    let line = comp.lines.get(line_idx)?;
+    // 첫 줄은 선행 컨트롤 문자 위치(char_start 앞)에 앵커된 tac 도 포함한다.
+    let start = if line_idx == 0 { 0 } else { line.char_start };
+    let end = comp
+        .lines
+        .get(line_idx + 1)
+        .map(|next| next.char_start)
+        .unwrap_or(usize::MAX);
+    let max_h_hu = comp
+        .tac_controls
+        .iter()
+        .filter(|(pos, _, _)| char_pos_in_line(*pos, start, end))
+        .filter_map(|(_, _, ctrl_idx)| match para.controls.get(*ctrl_idx)? {
+            Control::Picture(p) if p.common.treat_as_char => Some(p.common.height as i32),
+            Control::Shape(s) if s.common().treat_as_char => Some(s.common().height as i32),
+            _ => None,
+        })
+        .max()?;
+    if max_h_hu <= 0 {
+        return None;
+    }
+    Some(crate::renderer::hwpunit_to_px(max_h_hu, dpi))
 }
 
 fn line_has_tac_control(comp: &ComposedParagraph, line_idx: usize) -> bool {
@@ -3313,14 +3367,29 @@ impl LayoutEngine {
                 let para_style = styles.para_styles.get(comp.para_style_id as usize);
                 let margin_l = para_style.map(|s| s.margin_left).unwrap_or(0.0);
                 let margin_r = para_style.map(|s| s.margin_right).unwrap_or(0.0);
-                let column_inner_width = (col_area.width - margin_l - margin_r).max(0.0);
+                // 문단 전체 감폭 anchor(밴드 아님)가 있으면 typeset 이 이 문단을
+                // 잰 폭은 열 폭이 아니라 anchor 의 가용 폭(sw)이다 — 상자도 같은
+                // 폭이어야 재래핑 줄 수가 측정과 일치한다(줄 단위 밴드 anchor 는
+                // 문단 전체 폭을 바꾸지 않으므로 제외).
+                let effective_col_width = wrap_anchor
+                    .filter(|a| a.band_y_range.is_none())
+                    .map(|a| {
+                        // typeset 의 합성 감폭 col_w 와 같은 비례 관용을 더해야
+                        // 재래핑 줄 수가 측정과 일치한다.
+                        let sw_px = crate::renderer::hwpunit_to_px(a.anchor_sw, self.dpi);
+                        (sw_px + crate::renderer::synth_wrap_fit_slack_px(sw_px))
+                            .min(col_area.width)
+                    })
+                    .filter(|w| *w > 0.0)
+                    .unwrap_or(col_area.width);
+                let column_inner_width = (effective_col_width - margin_l - margin_r).max(0.0);
                 // 문단 상자는 편집 경로(`DocumentCore::reflow_paragraph`)의 가용 폭과
                 // 같아야 한다 — 한 문단이 어느 경로로 왔는지에 따라 다른 폭을 갖지
                 // 않게 한다(typeset 의 동일 산출과 맞춘다). 들여쓰기/내어쓰기는 이
                 // 상자 **안에서** `layout_paragraph_in_frame` 의 indent_px 가 적용한다.
                 // `body_for_style`, not `body` — see the note in `typeset.rs`.
                 let paragraph_box = crate::renderer::composer::ParagraphBox::body_for_style(
-                    col_area.width,
+                    effective_col_width,
                     para_style,
                     self.dpi,
                 );
@@ -4800,12 +4869,21 @@ impl LayoutEngine {
                             })
                         })
                 };
-            let uses_stored_segment_geometry = (has_picture_shape_square_wrap
-                || line_has_inline_tac_table
-                || precomputed_body_wrap_line
-                || empty_stored_wrap_line
-                || body_square_wrap_stored_line
-                || cell_square_wrap_stored_line)
+            // NO_LS 문단의 comp_line cs/sw 는 저장 기하가 아니라 프레임 재래핑이
+            // 방금 새긴 합성값이다 — cs 가 문단 자신의 margin_left 라서 저장 기하로
+            // 읽으면 `col_x + cs` 로 여백을 한 번 먹고 아래 일반 여백 처리가 또
+            // 더한다(#5677 과 같은 이중 적용, 2×18.3px). 저장 lineseg 가 있을 때만
+            // 이 경로를 연다.
+            let stored_geometry_source = para
+                .map(|p| !crate::renderer::para_has_no_stored_line_segs(p))
+                .unwrap_or(false);
+            let uses_stored_segment_geometry = stored_geometry_source
+                && (has_picture_shape_square_wrap
+                    || line_has_inline_tac_table
+                    || precomputed_body_wrap_line
+                    || empty_stored_wrap_line
+                    || body_square_wrap_stored_line
+                    || cell_square_wrap_stored_line)
                 && comp_line.segment_width > 0
                 && (line_avail_hu < col_area_w_hu - 200 || cs_significant);
             let (effective_col_x, effective_col_w) = if uses_stored_segment_geometry {
@@ -5005,21 +5083,63 @@ impl LayoutEngine {
             // indent가 image 쪽으로 한 번 더 돌출한다(HWP5 p127 그림 56 / p156 그림 64).
             let (line_cs_offset, line_avail_w_override) = if let Some(anchor) = wrap_anchor {
                 let seg = para.and_then(|p| p.line_segs.get(line_idx));
-                let cs = seg.map(|s| s.column_start as i32).unwrap_or(0);
-                let sw = seg.map(|s| s.segment_width as i32).unwrap_or(0);
+                // NO_LS 문단은 줄별 저장 cs/sw 가 없으므로
+                // 합성 anchor 의 존을 모든 줄에 적용한다.
+                let (cs, sw, synthetic_zone) = match seg {
+                    Some(s) => (s.column_start as i32, s.segment_width as i32, false),
+                    None => {
+                        // 줄 단위 배제 밴드: anchor 에 y 밴드가 실려 있으면 그
+                        // 밴드와 교차하는 줄에만 감폭을 적용한다(출석부 형상 —
+                        // 문단 첫 줄은 전폭, 개체 옆 줄만 회피).
+                        let in_band = anchor.band_y_range.is_none_or(|(band_top, band_bottom)| {
+                            // 눈금 오차(판정/렌더 장부 차)에 강하도록 줄 중심으로 판정.
+                            let line_center = text_y - y_start + line_height * 0.5;
+                            line_center > band_top - 2.0 && line_center < band_bottom + 2.0
+                        });
+                        if in_band {
+                            (anchor.anchor_cs, anchor.anchor_sw, true)
+                        } else {
+                            (0, 0, false)
+                        }
+                    }
+                };
                 let mr = anchor.anchor_image_margin_right;
                 let cs_px = crate::renderer::hwpunit_to_px(cs + mr, self.dpi);
-                let sw_px = if sw > 0 {
-                    Some(
-                        (crate::renderer::hwpunit_to_px((sw - mr).max(0), self.dpi)
-                            - effective_margin_left
-                            - effective_margin_right)
-                            .max(0.0),
-                    )
+                if synthetic_zone {
+                    // 합성 배제 존: 한글의 문단 왼 여백은 **열 기준** 들여쓰기라,
+                    // 개체 회피 지점이 이미 여백보다 오른쪽이면 여백은 소진된다.
+                    // cs 와 margin 을 가산하면 아이콘 옆 제목이 여백만큼 한 번 더
+                    // 벌어진다(재현: 아이콘 오른쪽 +3.8 이어야 할 제목이 +22.4).
+                    // x 계산부(아래 bbox)가 margin 을 더하므로 여기서는 여백을
+                    // 넘는 초과분만 offset 으로 남긴다.
+                    let absorbed_cs = (cs_px - effective_margin_left).max(0.0);
+                    // 텍스트 시작 = col + margin_l + absorbed_cs = col + max(margin_l, cs).
+                    // 가용 폭은 배제 존 폭(sw)에서 시작이 cs 보다 오른쪽으로 밀린
+                    // 양(max(0, margin_l - cs))과 오른 여백만 뺀다.
+                    let sw_px = if sw > 0 {
+                        Some(
+                            (crate::renderer::hwpunit_to_px((sw - mr).max(0), self.dpi)
+                                - (effective_margin_left - cs_px).max(0.0)
+                                - effective_margin_right)
+                                .max(0.0),
+                        )
+                    } else {
+                        None
+                    };
+                    (absorbed_cs, sw_px)
                 } else {
-                    None
-                };
-                (cs_px, sw_px)
+                    let sw_px = if sw > 0 {
+                        Some(
+                            (crate::renderer::hwpunit_to_px((sw - mr).max(0), self.dpi)
+                                - effective_margin_left
+                                - effective_margin_right)
+                                .max(0.0),
+                        )
+                    } else {
+                        None
+                    };
+                    (cs_px, sw_px)
+                }
             } else {
                 (0.0, None)
             };
@@ -5166,8 +5286,17 @@ impl LayoutEngine {
                     .then_some(step)
             });
             let flow_step = stored_line_advance.unwrap_or(line_height);
-            let line_flow_height =
+            let mut line_flow_height =
                 flow_step + equation_tac_extra_rows as f64 * (line_height + line_spacing_px);
+            // 합성 lineseg 문단의 tac 그림/도형 줄: 개체 높이만큼 줄 전진을 확장
+            // (한글: 글자처럼 개체는 줄 높이를 키운다 — 다음 줄이 개체 위로
+            // 올라오지 않게). 저장 사다리가 없는 문단이라 `stored_line_advance`
+            // 는 None 이고, 두 경로는 서로 배타적이다.
+            if let Some(min_flow) = para
+                .and_then(|p| no_ls_tac_object_line_min_flow_px(p, composed, line_idx, self.dpi))
+            {
+                line_flow_height = line_flow_height.max(min_flow);
+            }
             let render_line_flow_height =
                 if cell_ctx.is_none() && para_index >= self.endnote_para_base.get() {
                     // 미주 lineSeg의 행 진행값이 실제 TextLine bbox보다 작으면 단일 줄 미주가
