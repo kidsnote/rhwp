@@ -278,7 +278,13 @@ impl HeightCursor {
                 let lazy_end = self.col_area_y + ((prev_vpos_end - lb) as f64) / 7200.0 * self.dpi;
                 (lazy_end - y_offset).abs() <= 2.0
             });
-            prev_vpos_end >= 0
+            // ④ 쪽(단)의 첫 항목이 아닐 것 — 첫 항목이면 prev 문단은 **이전 쪽**에
+            //    있어 그 저장 vpos 는 이전 쪽 좌표계다. 이를 이 쪽 좌표로 강제하면
+            //    새 쪽 첫 문단이 이전 쪽 꼬리 높이(65848HU ≈ 878px)로 떨어져 뒤따르는
+            //    문단이 전부 쪽 밖으로 밀린다(업스트림 issue_3821 표본 p156 실측:
+            //    pi=1693 y 83 → 961, pi=1697 이 그림 밴드 밖).
+            y_offset > self.col_area_y + 0.5
+                && prev_vpos_end >= 0
                 && (prev_vpos_end as f64) <= self.col_area_height * 7200.0 / self.dpi + 1000.0
                 && page_end >= y_offset + 8.0
                 && lazy_noop
