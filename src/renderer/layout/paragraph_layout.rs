@@ -808,42 +808,6 @@ fn tac_owned_by_prior_empty_line(comp: &ComposedParagraph, line_idx: usize, pos:
         .is_some_and(|prev| prev.runs.is_empty() && prev.char_start == pos)
 }
 
-/// 합성 lineseg(저장 조판 없음) 문단에서 tac 그림/도형이 실린 줄의 최소 전진
-/// 높이(px). 한글은 글자처럼 개체가 줄 높이를 개체 높이만큼 키우는데, 저장
-/// lineseg 문단은 저장 lh 가 이를 이미 반영하므로 합성 문단만 대상이다.
-pub(crate) fn no_ls_tac_object_line_min_flow_px(
-    para: &crate::model::paragraph::Paragraph,
-    comp: &ComposedParagraph,
-    line_idx: usize,
-    dpi: f64,
-) -> Option<f64> {
-    if para.line_segs.iter().any(|ls| ls.tag & 0x80000000 == 0) {
-        return None; // 저장 lineseg 보유 — 저장 lh 신뢰
-    }
-    let line = comp.lines.get(line_idx)?;
-    // 첫 줄은 선행 컨트롤 문자 위치(char_start 앞)에 앵커된 tac 도 포함한다.
-    let start = if line_idx == 0 { 0 } else { line.char_start };
-    let end = comp
-        .lines
-        .get(line_idx + 1)
-        .map(|next| next.char_start)
-        .unwrap_or(usize::MAX);
-    let max_h_hu = comp
-        .tac_controls
-        .iter()
-        .filter(|(pos, _, _)| char_pos_in_line(*pos, start, end))
-        .filter_map(|(_, _, ctrl_idx)| match para.controls.get(*ctrl_idx)? {
-            Control::Picture(p) if p.common.treat_as_char => Some(p.common.height as i32),
-            Control::Shape(s) if s.common().treat_as_char => Some(s.common().height as i32),
-            _ => None,
-        })
-        .max()?;
-    if max_h_hu <= 0 {
-        return None;
-    }
-    Some(crate::renderer::hwpunit_to_px(max_h_hu, dpi))
-}
-
 fn line_has_tac_control(comp: &ComposedParagraph, line_idx: usize) -> bool {
     let Some(line) = comp.lines.get(line_idx) else {
         return false;
@@ -5286,17 +5250,8 @@ impl LayoutEngine {
                     .then_some(step)
             });
             let flow_step = stored_line_advance.unwrap_or(line_height);
-            let mut line_flow_height =
+            let line_flow_height =
                 flow_step + equation_tac_extra_rows as f64 * (line_height + line_spacing_px);
-            // 합성 lineseg 문단의 tac 그림/도형 줄: 개체 높이만큼 줄 전진을 확장
-            // (한글: 글자처럼 개체는 줄 높이를 키운다 — 다음 줄이 개체 위로
-            // 올라오지 않게). 저장 사다리가 없는 문단이라 `stored_line_advance`
-            // 는 None 이고, 두 경로는 서로 배타적이다.
-            if let Some(min_flow) = para
-                .and_then(|p| no_ls_tac_object_line_min_flow_px(p, composed, line_idx, self.dpi))
-            {
-                line_flow_height = line_flow_height.max(min_flow);
-            }
             let render_line_flow_height =
                 if cell_ctx.is_none() && para_index >= self.endnote_para_base.get() {
                     // 미주 lineSeg의 행 진행값이 실제 TextLine bbox보다 작으면 단일 줄 미주가

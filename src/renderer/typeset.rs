@@ -17793,14 +17793,7 @@ impl TypesetEngine {
                     )
                     .map(|flow| flow.extra_rows)
                     .unwrap_or(0);
-                let mut flow_lh = lh + extra_rows as f64 * (lh + line_spacing_px);
-                // 합성 lineseg 문단의 tac 그림/도형 줄 최소 전진 —
-                // paragraph_layout 의 렌더 y 확장과 동일 값으로 정합(이중 장부).
-                if let Some(min_flow) = crate::renderer::layout::no_ls_tac_object_line_min_flow_px(
-                    para, comp, line_idx, self.dpi,
-                ) {
-                    flow_lh = flow_lh.max(min_flow);
-                }
+                let flow_lh = lh + extra_rows as f64 * (lh + line_spacing_px);
                 pairs.push((flow_lh, line_spacing_px));
                 prev_line_reserved_tac_picture_height = tac_picture_height;
             }
@@ -21511,19 +21504,8 @@ impl TypesetEngine {
             control_index: ctrl_idx,
         });
         // 단 오른쪽 밖으로 통째로 벗어난 자리차지 개체는 lane 도, 본문 세로 공간도
-        // 소비하지 않는다(재현 문서 D: horz=단 227.6mm, A4 폭 210mm — 화면 밖).
-        // place_table_with_text 의 visible host 가드와 짝을 이룬다 — 편집으로 앵커가
-        // 빈 문단에 남아 이 경로로 와도 한글은 배치 계산에서 제외한다.
-        let starts_beyond_column_right =
-            matches!(
-                table.common.horz_rel_to,
-                crate::model::shape::HorzRelTo::Column
-            ) && hwpunit_to_px(table.common.horizontal_offset as i32, self.dpi)
-                >= column_area.width;
-        if !starts_beyond_column_right {
-            lanes.place(x_start, x_end, raw_top, reserved_height);
-            st.current_height = st.current_height.max(lanes.max_bottom());
-        }
+        lanes.place(x_start, x_end, raw_top, reserved_height);
+        st.current_height = st.current_height.max(lanes.max_bottom());
         true
     }
 
@@ -22022,22 +22004,6 @@ impl TypesetEngine {
             is_para_topbottom_float(&table.common) && para_has_non_whitespace_text(para);
         // 단 오른쪽 밖으로 통째로 벗어난 자리차지 개체는 본문 세로 공간을 차지하지
         // 않는다(재현 문서 D: horz=단 227.6mm, A4 폭 210mm — 화면 밖). 이 계약은
-        // 호스트 문단의 텍스트 유무와 무관하다 — 편집으로 앵커가 빈 문단으로 옮겨져도
-        // 한글은 공간을 소비하지 않는다.
-        let starts_beyond_column_right = is_para_topbottom_float(&table.common)
-            && matches!(
-                table.common.horz_rel_to,
-                crate::model::shape::HorzRelTo::Column
-            )
-            && {
-                let column_width = st
-                    .layout
-                    .column_areas
-                    .get(st.current_column as usize)
-                    .map(|area| area.width)
-                    .unwrap_or(st.layout.body_area.width);
-                hwpunit_to_px(table.common.horizontal_offset as i32, self.dpi) >= column_width
-            };
         let signed_vertical_offset = vertical_offset as i32;
         let total_lines = fmt.line_heights.len();
         // [#5871] 공백만 있는 host 문단이 두 술어 사이 틈에 빠진다 —
@@ -22253,7 +22219,7 @@ impl TypesetEngine {
             // 단 오른쪽 밖 개체는 배제 영역도 만들지 않는다 — 배제 영역을 만들면
             // 뒤따르는 본문 표가 그만큼 밀려 마지막 블록이 다음 쪽으로 넘어간다.
             if signed_vertical_offset > 0 {
-                if table_bottom > table_top + 0.5 && !starts_beyond_column_right {
+                if table_bottom > table_top + 0.5 {
                     st.visible_float_exclusions.push(VisibleFloatExclusion {
                         para_index: para_idx,
                         top: table_top,
@@ -22276,9 +22242,7 @@ impl TypesetEngine {
                 } else {
                     0.0
                 };
-                if !starts_beyond_column_right {
-                    st.current_height = st.current_height.max(table_bottom + inter_float_gap);
-                }
+                st.current_height = st.current_height.max(table_bottom + inter_float_gap);
             }
         } else if tac_wrap_split {
             st.current_height += table_total_height;
@@ -22404,11 +22368,7 @@ impl TypesetEngine {
                         })
                 })
                 .flatten();
-            if starts_beyond_column_right {
-                // 편집으로 앵커가 빈 문단에 남은 단 오른쪽 밖 자리차지 표 —
-                // visible host 경로와 동일하게 세로 공간을 소비하지 않는다.
-                st.current_height += pre_height;
-            } else if hwp3_topbottom_no_reserve {
+            if hwp3_topbottom_no_reserve {
                 st.current_height += pre_height + stored_host_line_px.unwrap_or(0.0);
             } else if hangul_flowed_beside_table {
                 let band_top = st.current_height + pre_height;

@@ -3014,7 +3014,6 @@ mod anchor_box_flow;
 mod border_rendering;
 mod fixed_textbox_flow;
 mod paragraph_layout;
-pub(crate) use paragraph_layout::no_ls_tac_object_line_min_flow_px;
 mod picture_footnote;
 mod shape_layout;
 mod table_cell_content;
@@ -10771,13 +10770,6 @@ impl LayoutEngine {
                 } else {
                     None
                 };
-                // 단 오른쪽 밖으로 통째로 벗어난 자리차지 개체는 본문 세로 공간을 차지하지
-                // 않는다(재현 문서 D: horz=단 227.6mm, A4 폭 210mm — 화면 밖).
-                // typeset 의 같은 가드와 짝을 이루며, 호스트 문단의 텍스트 유무와 무관하다.
-                let starts_beyond_column_right =
-                    matches!(t.common.horz_rel_to, crate::model::shape::HorzRelTo::Column)
-                        && hwpunit_to_px(t.common.horizontal_offset as i32, self.dpi)
-                            >= col_area.width;
                 y_offset = if is_current_visible_para_float {
                     let mut flow_y = if signed_hwpunit(t.common.vertical_offset) > 0 {
                         if issue2439_visible_host_stack {
@@ -10889,10 +10881,6 @@ impl LayoutEngine {
                     // [#4533 ⑥] 표는 예약 공간(앵커 위)에 이미 놓였다 — 흐름은
                     // 전진하지 않는다(앵커·후속 문단이 사다리 위치 유지).
                     table_y_before
-                } else if starts_beyond_column_right && is_para_topbottom_float(&t.common) {
-                    // 편집으로 앵커가 빈 문단에 남은 단 오른쪽 밖 자리차지 표 —
-                    // visible host 경로와 동일하게 흐름을 전진시키지 않는다.
-                    table_y_before
                 } else {
                     empty_rowbreak_flow_end.unwrap_or(table_flow_end)
                 };
@@ -10903,7 +10891,6 @@ impl LayoutEngine {
                             if is_para_topbottom_float(&following.common))
                     });
                 if is_current_visible_para_float
-                    && !starts_beyond_column_right
                     && (signed_vertical_offset > 0 || zero_offset_has_following_coanchored_float)
                     && table_visual_height > 0.0
                 {
