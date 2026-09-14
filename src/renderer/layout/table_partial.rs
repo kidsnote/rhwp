@@ -1901,6 +1901,19 @@ impl LayoutEngine {
                     )
                 });
                 let has_table_ctrl = para.controls.iter().any(|c| matches!(c, Control::Table(_)));
+                // 같은 형상이 **그림**으로도 온다. 셀 문단이 글자 없이 그림만 들고
+                // 저장 `LINE_SEG` 가 없으면 합성 줄 수가 0 이라 아래 컷 판정이
+                // "이 쪽 소속 아님"으로 읽는다 — 표 컨트롤만 구제하면 그림은 **어느
+                // 조각에서도** 배치되지 않아 문서에서 통째로 사라진다(실문서: 14행
+                // 표 안 그림 11장 전부 미노출). 글자처럼 취급 그림도 같다 — 빈 문단
+                // 이라 실릴 글줄이 없을 뿐 한/글은 제 줄에 그린다. 셀의 행 범위
+                // 판정(위 `render_range` 가드)이 이미 소속 조각을 가렸으므로, 여기
+                // 서는 컨트롤을 소유한 문단을 흘리지 않으면 된다. 중복 방출은 아래
+                // 컨트롤 루프의 `will_render_inline` 가드가 막는다.
+                let has_picture_ctrl = para
+                    .controls
+                    .iter()
+                    .any(|c| matches!(c, Control::Picture(_)));
                 // [#3820 Stage 77] HWP5에는 내부 표 control만 있고 LINE_SEG가 전혀
                 // 없는 셀 문단이 있다(76076 p35 row 6). 이 표가 들어 있는 outer
                 // fragment가 아직 source cut을 쓰지 않는다면, `(0, 0)`은 비가시
@@ -1908,7 +1921,7 @@ impl LayoutEngine {
                 // 같이 control을 배치해야 한다. cut fragment에서는 단위 소유권을
                 // 유지해 다음 쪽 표를 앞쪽에 중복 방출하지 않는다.
                 let uncut_control_only_nested_table = cut_units.is_none()
-                    && has_table_ctrl
+                    && (has_table_ctrl || has_picture_ctrl)
                     && para
                         .text
                         .chars()
@@ -2705,8 +2718,15 @@ impl LayoutEngine {
                                                 }
                                             };
                                             let with_offset = place(v_off);
+                                            // 이탈은 **완전** 이탈만이 아니다. 개체가 칸 콘텐츠
+                                            // 상단을 조금이라도 넘어 올라가면 그 몫은 칸 밖이고,
+                                            // 흐름 높이 장부(`non_inline_control_flow_height`)도
+                                            // 이 배치의 음수 오프셋을 `max(voff, 0)` 으로 버린다 —
+                                            // 렌더만 반영하면 `Center` 칸에서 개체가 voff/2 만큼
+                                            // 뜬다(실문서 표 9 행: voff −45.7·−75.7px → 각
+                                            // −22.9·−37.9px, 한/글 오라클은 두 장 모두 칸 정중앙).
                                             let escapes_above_cell_content =
-                                                v_off < 0.0 && with_offset + pic_h <= content_top;
+                                                v_off < 0.0 && with_offset < content_top - 0.5;
                                             if escapes_above_cell_content {
                                                 place(0.0)
                                             } else {
