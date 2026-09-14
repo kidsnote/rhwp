@@ -2110,12 +2110,20 @@ impl LayoutEngine {
     /// 남기도록 흐름 높이에 반영된다. 반대로 제한이 꺼진 문단 기준 floating
     /// 개체는 표 행 높이를 밀지 않는다.
     pub(crate) fn non_inline_control_flow_height(&self, common: &CommonObjAttr) -> f64 {
-        if common.treat_as_char || !matches!(common.text_wrap, TextWrap::TopAndBottom) {
+        if !matches!(common.text_wrap, TextWrap::TopAndBottom) {
             return 0.0;
         }
         let object_height = hwpunit_to_px(common.height as i32, self.dpi)
             + hwpunit_to_px(common.margin.top as i32, self.dpi)
             + hwpunit_to_px(common.margin.bottom as i32, self.dpi);
+        // 글자처럼 취급 개체는 제 줄에 실려 흐름을 차지한다. 글자가 있는 문단이면
+        // 그 줄 높이가 이미 개체를 담지만, **글자 없는 문단**은 담을 줄이 없어
+        // 합성 placeholder(5.3px)만 남는다 — 세로 정렬이 개체를 못 보고 `Center`
+        // 칸에서 개체 **상단**을 칸 중앙에 놓아 아래 칸을 침범한다(실문서 표
+        // 8·5 행: 기대 812.6 vs 실제 867.3, 일괄 +54.7px).
+        if common.treat_as_char {
+            return object_height;
+        }
         if matches!(common.vert_rel_to, VertRelTo::Para) {
             if common.flow_with_text {
                 hwpunit_to_px((common.vertical_offset as i32).max(0), self.dpi) + object_height
