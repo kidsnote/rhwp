@@ -503,6 +503,10 @@ pub(crate) fn plan_with_storage<S: crate::storage::Storage>(
     let mut word_metrics = std::collections::BTreeMap::new();
     let mut attached_word_metrics = std::collections::BTreeMap::new();
     let spaces = separator_spaces::classify_with_storage(&atoms, &chars, storage)?;
+    // 문단 끝 공백 걸기는 줄 머리 글자처럼 취급 표 하나와 공백뿐인 문단에만 쓴다.
+    // 표 앞 공백·가시 글자·다른 글자처럼 취급 개체(두 번째 표 등)가 있으면 넘친
+    // 끝 공백은 다음 줄로 넘어가 그 줄 높이를 정한다(한/글 2020 Print 실측).
+    let hang_paragraph_tail = crate::renderer::tac_table_host_text_is_line_tail(para);
     let mut index = 0;
     while index < atoms.len() {
         let Atom::Box(first) = &atoms[index] else {
@@ -749,11 +753,12 @@ pub(crate) fn plan_with_storage<S: crate::storage::Storage>(
                         InlineFlowContent::Text { range, .. } if cut == range.end));
                 // A separator consumed by a soft wrap remains in the source
                 // row. It must not create a whitespace-only row before the
-                // next word/table, nor after the last flow content of the
-                // paragraph (Hancom hangs trailing whitespace). Space-only
+                // next word/table, nor after a line-head TAC table that is the
+                // paragraph's only flow content (Hancom hangs that tail). Space-only
                 // paragraphs and authored breaks retain their real line boxes.
                 if matches!(&item.content, InlineFlowContent::Text { range, .. }
-                    if spaces.wrap.contains(&range.start) || spaces.trailing.contains(&range.start))
+                    if spaces.wrap.contains(&range.start)
+                        || (hang_paragraph_tail && spaces.trailing.contains(&range.start)))
                     && row_metrics.width + item.width > row_width + 0.01
                     && !first_overhang_space
                     && !keep_oversized_space

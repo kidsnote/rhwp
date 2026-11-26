@@ -18,7 +18,8 @@ pub(super) struct SeparatorSpaces {
     pub wrap: BTreeSet<usize>,
     /// 문단 끝 공백 — 뒤에 글자·개체·개행·부동 앵커가 없다. 한/글은 말미 공백에
     /// 줄상자를 주지 않으므로(#7500·#7160 `absorb_whitespace_only_rows`) 넘쳐도
-    /// 앞 줄 끝에 걸린다.
+    /// 앞 줄 끝에 걸린다. 걸기는 줄 머리 글자처럼 취급 표 하나와 공백뿐인 문단에만
+    /// 쓴다(`tac_table_host_text_is_line_tail`).
     pub trailing: BTreeSet<usize>,
     /// 뒤에 부동 앵커(글앞·글뒤 표·도형 등 폭 없는 개체)만 남은 문단 끝 공백.
     /// 한/글은 이 공백이 넘치면 일반 글줄과 같은 공백 걸기(#7168·#8639)를 쓴다:
