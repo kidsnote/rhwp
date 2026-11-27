@@ -482,6 +482,13 @@ impl TypesetEngine {
         if st.has_column_content() {
             st.flush_column_always_with_storage(storage)?;
         }
+        // 쪽 끝을 넘어 다음 쪽 대기열에 남은 장식 표의 잔여 행은 뒤따르는 흐름이 쪽을 열 때
+        // 그 쪽 위에 그린다. 흐름이 먼저 끝나 쪽이 열리지 않으면 잔여 행이 어디에도 그려지지
+        // 않으므로, 잔여 행만 담을 쪽을 연다.
+        if !st.pending_overlay_continuations.is_empty() {
+            st.push_new_page_with_storage(storage)?;
+            st.flush_column_always_with_storage(storage)?;
+        }
         // 마지막 본문 뒤의 저장 각주 suffix도 버리지 않는다. 실제 다음 쪽을
         // 열면 전환 command가 큐를 인출하고 기존 각주 lane에 높이를 예약한다.
         // 쪽보다 긴 각주는 쪽마다 들어가는 줄까지만 인출되므로 큐가 빌 때까지 연다.

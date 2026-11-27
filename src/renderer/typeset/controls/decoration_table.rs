@@ -13,6 +13,9 @@ pub(in crate::renderer::typeset) struct OverlayContinuation {
     pub reserve_px: f64,
     pub room: f64,
     pub row_fragment: Option<OverlayRowFragment>,
+    /// 넘치는 행의 글이 남은 자리에 다 들어가 그 행을 이 쪽에 두고 쪽 끝 너머 빈 몫만 버렸다.
+    /// 다음 쪽 대기열은 그 다음 행부터이고, 남은 행이 없으면 대기열을 만들지 않는다.
+    pub kept_whole_row: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -24,6 +27,7 @@ pub(super) fn continuation(
     current_height: f64,
     dpi: f64,
     base_available_height: impl FnOnce() -> f64,
+    whole_row_fits: impl FnOnce(usize, f64) -> bool,
     partial_row: impl FnOnce(usize, f64) -> Option<OverlayRowFragment>,
 ) -> Option<OverlayContinuation> {
     // [#7441] 잔여 행 컷은 흐름을 따라 쪽 하단에 닿는 문단 기준 표만 대상이다(#4568 원 범위).
@@ -52,10 +56,33 @@ pub(super) fn continuation(
             .map(|i| i.saturating_sub(1))
             .unwrap_or(ft.row_heights.len());
         if first_unfit > 0 && first_unfit < ft.row_heights.len() {
-            let row_fragment = partial_row(
-                first_unfit,
-                room - ft.cumulative_heights[first_unfit] - ft.cell_spacing,
-            );
+            let row_room = room - ft.cumulative_heights[first_unfit] - ft.cell_spacing;
+            // 저장 줄 없는 행의 글이 남은 자리에 다 들어가면 한/글은 그 행을 나누지 않고 이 쪽에
+            // 둔다. 선언 높이 가운데 본문 아래끝을 넘는 빈 몫은 깎아 버린다(한컴 2020 Print:
+            // 표 아래선이 본문 아래끝에 닿는다). 넘길 글이 없으므로 그 행 때문에 쪽을 열지 않는다.
+            if whole_row_fits(first_unfit, row_room) {
+                let remaining_px = (ft.effective_height
+                    - ft.cumulative_heights
+                        .get(first_unfit + 1)
+                        .copied()
+                        .unwrap_or(ft.effective_height))
+                .max(0.0);
+                return Some(OverlayContinuation {
+                    first_unfit,
+                    remaining_px,
+                    reserve_px: 0.0,
+                    room,
+                    // 행 컷 없이 표를 그리되 표 위끝에서 본문 아래끝까지(room)로 자른다.
+                    row_fragment: Some(OverlayRowFragment {
+                        end_cut: Vec::new(),
+                        opening_height: room,
+                        remaining_height: 0.0,
+                        owns_stored_frame: false,
+                    }),
+                    kept_whole_row: true,
+                });
+            }
+            let row_fragment = partial_row(first_unfit, row_room);
             let remaining_px = (ft.effective_height
                 - ft.cumulative_heights
                     .get(first_unfit)
@@ -92,10 +119,23 @@ pub(super) fn continuation(
                 reserve_px,
                 room,
                 row_fragment,
+                kept_whole_row: false,
             });
         }
     }
     None
+}
+
+pub(super) fn whole_row_fits_query(
+    engine: &crate::renderer::typeset::TypesetEngine,
+    state: &crate::renderer::typeset::TypesetState,
+    table: &Table,
+    formatted: &FormattedTable,
+    styles: &crate::renderer::style_resolver::ResolvedStyleSet,
+    row: usize,
+    available: f64,
+) -> bool {
+    row_fragment::whole_row_fits(engine, state, table, formatted, styles, row, available)
 }
 
 pub(super) fn partial_row_query(

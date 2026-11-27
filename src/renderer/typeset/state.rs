@@ -488,20 +488,37 @@ impl TypesetState {
     ) -> Result<(), S::Error> {
         if let Some(continuation) = continuation {
             let fragment = continuation.row_fragment;
-            storage.push(
-                &mut self.data.pending_overlay_continuations,
-                crate::renderer::pagination::OverlayContinuation {
-                    para_index: para_idx,
-                    control_index: ctrl_idx,
-                    start_row: continuation.first_unfit,
-                    start_cut: match &fragment {
-                        Some(f) => storage.copy_slice(&f.end_cut)?,
-                        None => Vec::new(),
+            if continuation.kept_whole_row {
+                // 넘친 행은 이 쪽에 통째로 두었다. 대기열은 다음 행부터, 남은 행이 있을 때만.
+                if continuation.remaining_px > 0.0 {
+                    storage.push(
+                        &mut self.data.pending_overlay_continuations,
+                        crate::renderer::pagination::OverlayContinuation {
+                            para_index: para_idx,
+                            control_index: ctrl_idx,
+                            start_row: continuation.first_unfit + 1,
+                            start_cut: Vec::new(),
+                            start_row_height: None,
+                            reserve_px: continuation.reserve_px,
+                        },
+                    )?;
+                }
+            } else {
+                storage.push(
+                    &mut self.data.pending_overlay_continuations,
+                    crate::renderer::pagination::OverlayContinuation {
+                        para_index: para_idx,
+                        control_index: ctrl_idx,
+                        start_row: continuation.first_unfit,
+                        start_cut: match &fragment {
+                            Some(f) => storage.copy_slice(&f.end_cut)?,
+                            None => Vec::new(),
+                        },
+                        start_row_height: fragment.as_ref().map(|f| f.remaining_height),
+                        reserve_px: continuation.reserve_px,
                     },
-                    start_row_height: fragment.as_ref().map(|f| f.remaining_height),
-                    reserve_px: continuation.reserve_px,
-                },
-            )?;
+                )?;
+            }
             storage.push(
                 &mut self.data.current_column_overlay_cuts,
                 (

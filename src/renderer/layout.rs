@@ -18338,11 +18338,13 @@ impl LayoutEngine {
                             None,
                         );
                     } else {
+                        // 글이 다 들어가 이 쪽에 남긴 넘친 행은 행 컷 없이 그리고, 표 위끝에서
+                        // 본문 아래끝까지(`end_row_height`)로 마지막 행 아래선을 자른다.
                         let overlay_cut =
                             source_cut.map(|cut| super::layout::table_layout::NestedTableSplit {
                                 start_row: 0,
                                 end_row: cut.end_row,
-                                visible_height: 0.0,
+                                visible_height: cut.end_row_height.unwrap_or(0.0),
                                 flow_height: 0.0,
                                 offset_within_start: 0.0,
                                 content_offset: 0.0,

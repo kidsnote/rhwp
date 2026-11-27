@@ -190,6 +190,9 @@ pub(super) fn place_decoration_table_with_storage<S: crate::storage::Storage>(
         dpi,
         || st.base_available_height(),
         |row, available| {
+            decoration_table::whole_row_fits_query(engine, st, table, &ft, styles, row, available)
+        },
+        |row, available| {
             decoration_table::partial_row_query(engine, st, table, &ft, styles, row, available)
         },
     );
