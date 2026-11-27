@@ -1029,10 +1029,12 @@ impl DocumentCore {
                                 // 컨트롤(중첩 표 등) 호스트 문단은 typeset 표 줄
                                 // 계산이 담당한다 — 합성 시 중첩 표 높이와 이중
                                 // 계상(80168 pi=1243 행6 264→467px, 158 회귀).
+                                // 단 정의처럼 크기 없는 컨트롤만 든 빈 문단은 순수 빈
+                                // 문단과 같이 합성한다. 줄 없이 두면 칸 높이 계산이 그
+                                // 문단을 400HU 로 세어 행이 줄 하나만큼 짧아진다.
                                 let inc = include_empty
                                     || (include_cell_empty
-                                        && cell_para.text.is_empty()
-                                        && cell_para.controls.is_empty()
+                                        && Self::cell_paragraph_is_sizeless_empty(cell_para)
                                         && !cell_diagonal);
                                 // [#4898] 본문과 셀은 같은 구역의 저장 lineseg
                                 // 좌표계를 공유한다. 셀만 구역 권위를 무시하면 한컴이
@@ -1769,6 +1771,21 @@ impl DocumentCore {
     /// HWPX 파서는 linesegarray 부재 문단을 빈 채 보존하므로(#1380) 로드 시 합성이
     /// 필요하다. HWP5/HWP3 는 빈 line_segs 를 reflow 하지 않던 종전 동작을 유지한다
     /// (확장 시 sample16-hwp5 페이지 수 64→over-split 회귀 확인).
+    /// 저장 줄 없는 칸 문단 가운데 글자 크기로 줄을 합성할 빈 문단인가.
+    ///
+    /// 글자가 없고 컨트롤이 없거나, 단 정의처럼 크기 없는 컨트롤만 든 문단이다. 한/글은 단 정의만
+    /// 든 빈 칸 문단도 빈 문단과 같은 줄 하나로 센다. 표·그림·도형 같은 크기 있는 컨트롤을 든
+    /// 문단은 그 개체의 높이 회계가 따로 있으므로 여기서 줄을 합성하지 않는다.
+    fn cell_paragraph_is_sizeless_empty(para: &Paragraph) -> bool {
+        use crate::model::control::Control;
+
+        para.text.is_empty()
+            && para
+                .controls
+                .iter()
+                .all(|control| matches!(control, Control::ColumnDef(_)))
+    }
+
     fn needs_line_seg_reflow(
         para: &crate::model::paragraph::Paragraph,
         include_empty: bool,
@@ -2299,8 +2316,7 @@ impl DocumentCore {
                     });
                 for child_para in &mut cell.paragraphs {
                     if !diagonal
-                        && child_para.text.is_empty()
-                        && child_para.controls.is_empty()
+                        && Self::cell_paragraph_is_sizeless_empty(child_para)
                         && Self::needs_line_seg_reflow_in_scope(child_para, true, section_sized)
                     {
                         reflow_line_segs(
